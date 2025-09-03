@@ -1,0 +1,15 @@
+# Install these with: pip install -r requirements.txt
+fastapi
+uvicorn
+python-multipart
+pydantic
+pandas
+scikit-learn
+joblib
+pytesseract
+opencv-python-headless
+Pillow
+streamlit
+tqdm
+python-Levenshtein
+python-dateutil
