@@ -1,0 +1,13 @@
+train: ../train/images
+val: ../valid/images
+test: ../test/images
+
+nc: 3
+names: ['Date', 'Merchant', 'Total']
+
+roboflow:
+  workspace: capstone-emk5p
+  project: receipts-dataset-philippines
+  version: 1
+  license: CC BY 4.0
+  url: https://universe.roboflow.com/capstone-emk5p/receipts-dataset-philippines/dataset/1

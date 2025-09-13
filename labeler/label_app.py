@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 from pathlib import Path
 
-CATS = ["Utilities","Food","Transportation","Health & Wellness","Others"]
+CATS = ["Utilities","Food","Transportation","Health & Wellness","Groceries","Others"]
 
 st.title("Receipt Labeler")
 DATA = Path(__file__).resolve().parents[1]/"data"

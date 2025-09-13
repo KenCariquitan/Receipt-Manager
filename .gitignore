@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg-info/
+.eggs/
+
+# Virtual environment
+.venv/
+env/
+venv/
+
+# IDE/editor stuff
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Data & outputs (don’t version control raw or generated data)
+data/raw_images/
+data/ocr_raw.csv
+data/parsed_fields.csv
+data/labels.csv
+data/dataset.csv
+data/feedback.csv
+data/receipts.db
+
+# Models (generated)
+models/*.joblib
+models/*.pt
+models/*.onnx
+
+# Training outputs
+runs/
+checkpoints/
+
+# Logs
+*.log
+
+# Streamlit & cache
+.streamlit/

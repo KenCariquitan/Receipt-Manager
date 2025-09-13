@@ -41,7 +41,7 @@ uvicorn app.api:app --reload --port 8000
 ```
 Open your browser to:
 - **Health check:** http://localhost:8000/health
-- **Interactive API docs:** http://localhost:8000/docs
+- **Interactive API docs:**   
 
 ### 4) Test without coding
 In http://localhost:8000/docs

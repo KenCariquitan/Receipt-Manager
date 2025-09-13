@@ -1,4 +1,3 @@
-# Install these with: pip install -r requirements.txt
 fastapi
 uvicorn
 python-multipart
@@ -13,3 +12,5 @@ streamlit
 tqdm
 python-Levenshtein
 python-dateutil
+ultralytics
+SQLAlchemy

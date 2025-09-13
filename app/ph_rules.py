@@ -1,4 +1,5 @@
 import re
+import Levenshtein as lev
 from typing import Optional, Tuple
 
 FOOD_BRANDS = {"JOLLIBEE","MCDONALD","MCDONALD'S","KFC","CHOWKING","GREENWICH",
@@ -12,16 +13,18 @@ UTILITY_KW = {"kwh","kilowatt","meter","account no","service period","due date",
 TRANSPORT_KW = {"diesel","unleaded","gasoline","pump","liter","litre","toll","rfid","easytrip","autosweep","plate","odometer","grab","angkas"}
 FOOD_KW = {"meal","combo","burger","fries","chicken","rice","drink","beverage","snack","dine","take out"}
 HEALTH_KW = {"pharmacy","rx","tablet","capsule","mg","ml","clinic","dental","optical","laboratory","prescription"}
-GROCERY_KW = {"grocery","supermarket"}
+GROCERY_KW = {"grocery","supermarket","hypermarket","market","minimart","convenience"}
 
 ALL_SETS = [
-    ("Food", FOOD_BRANDS, FOOD_KW),
     ("Utilities", UTILITY_BRANDS, UTILITY_KW),
     ("Transportation", TRANSPORT_BRANDS, TRANSPORT_KW),
     ("Health & Wellness", HEALTH_BRANDS, HEALTH_KW),
+    ("Groceries", GROCERY_BRANDS, GROCERY_KW),  # NEW
+    ("Food", FOOD_BRANDS, FOOD_KW),
 ]
 
 SPACES = re.compile(r"\s+")
+
 
 def normalize_store_name(store: Optional[str]) -> Optional[str]:
     if not store:
@@ -32,15 +35,18 @@ def normalize_store_name(store: Optional[str]) -> Optional[str]:
     s = re.sub(r"\s{2,}"," ",s).strip()
     return s
 
+
 def _store_match(norm: str) -> Optional[str]:
+    # Exact contains
     for cat, brands, _ in ALL_SETS:
         for b in brands:
-            if b in norm:
+            if b in norm: return cat
+    # Fuzzy (ratio >= 0.85)
+    for cat, brands, _ in ALL_SETS:
+        for b in brands:
+            if lev.ratio(b, norm) >= 0.85:  # tweak threshold if noisy
                 return cat
-    for b in GROCERY_BRANDS:
-        if b in norm:
-            return "Food"
-    return None
+
 
 def _keyword_match(text_low: str) -> Optional[str]:
     if any(k in text_low for k in UTILITY_KW):
