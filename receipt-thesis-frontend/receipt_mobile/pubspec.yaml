@@ -1,0 +1,26 @@
+name: receipt_mobile
+description: Receipt OCR & Classifier client for your thesis backend
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: ">=3.3.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  http: ^1.2.0
+  image_picker: ^1.0.7
+  http_parser: ^4.0.2
+  flutter_riverpod: ^2.5.1
+  intl: ^0.19.0
+  fl_chart: ^0.69.0
+  flutter_image_compress: ^2.1.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+
+flutter:
+  uses-material-design: true
