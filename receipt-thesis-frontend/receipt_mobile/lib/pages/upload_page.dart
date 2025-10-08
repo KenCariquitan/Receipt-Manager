@@ -101,7 +101,6 @@ class _UploadPageState extends ConsumerState<UploadPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Upload Receipt')),
       body: Padding(
         padding: const EdgeInsets.all(16),
         child: Column(
@@ -110,8 +109,7 @@ class _UploadPageState extends ConsumerState<UploadPage> {
               children: [
                 Expanded(
                   child: ElevatedButton.icon(
-                    onPressed:
-                        loading ? null : () => _pick(ImageSource.camera),
+                    onPressed: loading ? null : () => _pick(ImageSource.camera),
                     icon: const Icon(Icons.photo_camera),
                     label: const Text('Camera'),
                   ),

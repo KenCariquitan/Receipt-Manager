@@ -11,12 +11,13 @@ class ReceiptsPage extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final recs = ref.watch(receiptsProvider);
     return Scaffold(
-      appBar: AppBar(title: const Text('Receipts')),
       body: recs.when(
         loading: () => const Center(child: CircularProgressIndicator()),
         error: (e, _) => Center(child: Text('Error: $e')),
         data: (list) {
-          if (list.isEmpty) return const Center(child: Text('No receipts yet.'));
+          if (list.isEmpty) {
+            return const Center(child: Text('No receipts yet.'));
+          }
           return RefreshIndicator(
             onRefresh: () async => ref.refresh(receiptsProvider),
             child: ListView.separated(
@@ -27,11 +28,15 @@ class ReceiptsPage extends ConsumerWidget {
                 return ListTile(
                   title: Text(r.store ?? 'Unknown'),
                   subtitle: Text('${r.date ?? '—'} • ${r.category ?? '—'}'),
-                  trailing: Text(r.total != null ? '₱${r.total!.toStringAsFixed(2)}' : '—'),
+                  trailing: Text(r.total != null
+                      ? '₱${r.total!.toStringAsFixed(2)}'
+                      : '—'),
                   onTap: () {
-                    Navigator.push(context, MaterialPageRoute(
-                      builder: (_) => ReceiptDetailPage(receipt: r),
-                    )).then((_) => ref.refresh(receiptsProvider));
+                    Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => ReceiptDetailPage(receipt: r),
+                        )).then((_) => ref.refresh(receiptsProvider));
                   },
                 );
               },

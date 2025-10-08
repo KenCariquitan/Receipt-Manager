@@ -17,4 +17,4 @@ SQLAlchemy
 python-dotenv
 httpx
 psycopg2-binary
-
+python-jose[cryptography]

@@ -1,61 +1,102 @@
 import 'dart:convert';
 import 'package:http/http.dart' as http;
-import 'package:http/http.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+
 import 'config.dart';
 import 'models.dart';
 
 class ApiClient {
   String get _base => AppConfig.apiBaseUrl;
 
+  /// Build Authorization header from Supabase session.
+  Future<Map<String, String>> _authHeaders() async {
+    final session = Supabase.instance.client.auth.currentSession;
+    final token = session?.accessToken;
+    return {
+      if (token != null && token.isNotEmpty) 'Authorization': 'Bearer $token',
+    };
+  }
+
+  /// Optional shared decoder with simple error handling.
+  T _decodeJson<T>(http.Response r) {
+    if (r.statusCode >= 200 && r.statusCode < 300) {
+      return jsonDecode(r.body) as T;
+    }
+    // Surface backend errors to the UI
+    throw Exception(
+        'HTTP ${r.statusCode} ${r.reasonPhrase} — ${r.body.isNotEmpty ? r.body : 'no body'}');
+  }
+
   Future<Map<String, dynamic>> health() async {
-    final r = await http.get(Uri.parse('$_base/health')).timeout(const Duration(seconds: 15));
-    return jsonDecode(r.body) as Map<String, dynamic>;
+    final r = await http
+        .get(Uri.parse('$_base/health'), headers: await _authHeaders())
+        .timeout(const Duration(seconds: 15));
+    return _decodeJson<Map<String, dynamic>>(r);
   }
 
   Future<UploadResult> uploadReceipt(MultipartFile file) async {
     final uri = Uri.parse('$_base/upload_receipt');
-    final req = http.MultipartRequest('POST', uri)..files.add(file);
+    final req = http.MultipartRequest('POST', uri)
+      ..headers.addAll(await _authHeaders())
+      ..files.add(file);
+
     final streamed = await req.send();
     final body = await streamed.stream.bytesToString();
+
+    if (streamed.statusCode < 200 || streamed.statusCode >= 300) {
+      throw Exception('HTTP ${streamed.statusCode} on /upload_receipt — $body');
+    }
     final json = jsonDecode(body) as Map<String, dynamic>;
     return UploadResult.fromJson(json);
   }
 
   Future<List<Receipt>> listReceipts({int limit = 50, int offset = 0}) async {
     final uri = Uri.parse('$_base/receipts?limit=$limit&offset=$offset');
-    final r = await http.get(uri).timeout(const Duration(seconds: 20));
-    final arr = jsonDecode(r.body) as List;
+    final r = await http
+        .get(uri, headers: await _authHeaders())
+        .timeout(const Duration(seconds: 20));
+    final arr = _decodeJson<List>(r);
     return arr.map((e) => Receipt.fromJson(e as Map<String, dynamic>)).toList();
   }
 
   Future<SummaryStats> getSummary() async {
-    final r = await http.get(Uri.parse('$_base/stats/summary')).timeout(const Duration(seconds: 15));
-    return SummaryStats.fromJson(jsonDecode(r.body) as Map<String, dynamic>);
+    final r = await http
+        .get(Uri.parse('$_base/stats/summary'), headers: await _authHeaders())
+        .timeout(const Duration(seconds: 15));
+    return SummaryStats.fromJson(_decodeJson<Map<String, dynamic>>(r));
   }
 
   Future<List<Map<String, dynamic>>> statsByCategory() async {
-    final r = await http.get(Uri.parse('$_base/stats/by_category')).timeout(const Duration(seconds: 15));
-    final arr = jsonDecode(r.body) as List;
+    final r = await http
+        .get(Uri.parse('$_base/stats/by_category'),
+            headers: await _authHeaders())
+        .timeout(const Duration(seconds: 15));
+    final arr = _decodeJson<List>(r);
     return arr.cast<Map<String, dynamic>>();
   }
 
-  Future<bool> sendFeedback({required String text, required String trueLabel}) async {
+  Future<bool> sendFeedback({
+    required String text,
+    required String trueLabel,
+  }) async {
     final uri = Uri.parse('$_base/feedback');
-    final r = await http.post(uri, body: {
+    final r = await http.post(uri, headers: await _authHeaders(), body: {
       'text': text,
-      'true_label': trueLabel,
+      'true_label': trueLabel
     }).timeout(const Duration(seconds: 20));
     if (r.statusCode == 200) {
       final j = jsonDecode(r.body) as Map<String, dynamic>;
       return (j['ok'] == true);
     }
-    return false;
+    // bubble up errors (401/500) to caller
+    throw Exception(
+        'HTTP ${r.statusCode} ${r.reasonPhrase} — ${r.body.isNotEmpty ? r.body : 'no body'}');
   }
 
   Future<bool> updateReceipt({
     required String id,
     String? store,
-    String? date,
+    String? date, // ISO string
     double? total,
     String? category,
   }) async {
@@ -66,16 +107,20 @@ class ApiClient {
     if (total != null) payload['total'] = total;
     if (category != null) payload['category'] = category;
 
-    final r = await http.patch(
-      uri,
-      headers: {'Content-Type': 'application/json'},
-      body: jsonEncode(payload),
-    ).timeout(const Duration(seconds: 20));
+    final r = await http
+        .patch(uri,
+            headers: {
+              'Content-Type': 'application/json',
+              ...await _authHeaders(),
+            },
+            body: jsonEncode(payload))
+        .timeout(const Duration(seconds: 20));
 
     if (r.statusCode == 200) {
       final j = jsonDecode(r.body) as Map<String, dynamic>;
       return j['ok'] == true;
     }
-    return false;
+    throw Exception(
+        'HTTP ${r.statusCode} ${r.reasonPhrase} — ${r.body.isNotEmpty ? r.body : 'no body'}');
   }
 }

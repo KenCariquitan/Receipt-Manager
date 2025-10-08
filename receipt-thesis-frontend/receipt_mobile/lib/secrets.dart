@@ -1,0 +1,3 @@
+const supabaseUrl = 'https://xadallnhdkafulcblcta.supabase.co';
+const supabaseAnonKey =
+    'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InhhZGFsbG5oZGthZnVsY2JsY3RhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTc5MzYxODAsImV4cCI6MjA3MzUxMjE4MH0.BTfMMZo5llL4X29apdrdvuEShdg5i_uo79xbWqw7E4Y';
