@@ -1,0 +1,18 @@
+version: "3.8"
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: receipt-backend
+    ports:
+      - "8000:8000"
+    environment:
+      - PORT=8000
+      # use your .env file for secret vars; DO NOT commit .env to git
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data   # keep OCR outputs, DB, etc persistent on host
+      - ./models:/app/models
+    restart: unless-stopped

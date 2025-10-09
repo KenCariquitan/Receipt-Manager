@@ -1,0 +1,16 @@
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.vscode
+.env
+.env.*
+.git
+.gitignore
+venv
+.venv
+node_modules
+*.sqlite3
+data/raw_images/*
+runs/*
+models/*
