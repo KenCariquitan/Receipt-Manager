@@ -44,4 +44,4 @@ checkpoints/
 # Streamlit & cache
 .streamlit/
 # GCV
-receipt-thesis-backend/credentials/
+credentials/
