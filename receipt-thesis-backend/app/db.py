@@ -244,3 +244,207 @@ def stats_summary(user_id: str) -> dict:
                 "top_category": top[0] if top else None,
                 "top_category_total": float(top[1]) if top else 0.0,
             }
+
+
+def top_merchants_current_month(user_id: str, limit: int = 5) -> list[dict]:
+    from sqlalchemy import func, text
+    limit = max(1, min(limit, 25))
+    with SessionLocal() as db:
+        if SUPABASE_DB_URL:
+            rows = db.execute(
+                text(
+                    """
+                    SELECT COALESCE(store_normalized, store) AS store,
+                           COUNT(id) AS receipt_count,
+                           COALESCE(SUM(total), 0) AS total_spend
+                    FROM receipts
+                    WHERE user_id = :uid
+                      AND date >= date_trunc('month', CURRENT_DATE)
+                      AND store IS NOT NULL
+                    GROUP BY store, store_normalized
+                    ORDER BY total_spend DESC NULLS LAST
+                    LIMIT :limit
+                    """
+                ),
+                {"uid": user_id, "limit": limit},
+            ).fetchall()
+            return [
+                {
+                    "store": r[0] or "Unknown",
+                    "receipt_count": int(r[1]),
+                    "total_spend": float(r[2]),
+                }
+                for r in rows
+            ]
+        else:
+            today = datetime.utcnow().date()
+            first = today.replace(day=1)
+            rows = (
+                db.query(
+                    func.coalesce(Receipt.store_normalized, Receipt.store).label("store"),
+                    func.count(Receipt.id),
+                    func.coalesce(func.sum(Receipt.total), 0.0),
+                )
+                .filter(
+                    Receipt.user_id == user_id,
+                    Receipt.date.isnot(None),
+                    Receipt.date >= first,
+                )
+                .group_by("store")
+                .order_by(func.sum(Receipt.total).desc())
+                .limit(limit)
+                .all()
+            )
+            return [
+                {"store": store or "Unknown", "receipt_count": int(count), "total_spend": float(total)}
+                for store, count, total in rows
+            ]
+
+
+def weekday_spend(user_id: str) -> list[dict]:
+    from sqlalchemy import func, text
+    with SessionLocal() as db:
+        if SUPABASE_DB_URL:
+            rows = db.execute(
+                text(
+                    """
+                    SELECT EXTRACT(DOW FROM date) AS dow,
+                           COALESCE(SUM(total), 0) AS total_spend,
+                           COUNT(id) AS receipt_count
+                    FROM receipts
+                    WHERE user_id = :uid
+                      AND date IS NOT NULL
+                    GROUP BY dow
+                    ORDER BY dow
+                    """
+                ),
+                {"uid": user_id},
+            ).fetchall()
+            return [
+                {"weekday": int(r[0]), "total_spend": float(r[1]), "receipt_count": int(r[2])}
+                for r in rows
+            ]
+        else:
+            rows = (
+                db.query(
+                    func.strftime("%w", Receipt.date).label("dow"),
+                    func.coalesce(func.sum(Receipt.total), 0.0),
+                    func.count(Receipt.id),
+                )
+                .filter(Receipt.user_id == user_id, Receipt.date.isnot(None))
+                .group_by("dow")
+                .order_by("dow")
+                .all()
+            )
+            return [
+                {"weekday": int(dow), "total_spend": float(total), "receipt_count": int(count)}
+                for dow, total, count in rows
+            ]
+
+
+def rolling_30_day_spend(user_id: str) -> list[dict]:
+    from sqlalchemy import func, text
+    with SessionLocal() as db:
+        if SUPABASE_DB_URL:
+            rows = db.execute(
+                text(
+                    """
+                    SELECT date::date AS day,
+                           COALESCE(SUM(total), 0) AS total_spend,
+                           COUNT(id) AS receipt_count
+                    FROM receipts
+                    WHERE user_id = :uid
+                      AND date >= CURRENT_DATE - INTERVAL '29 day'
+                    GROUP BY day
+                    ORDER BY day
+                    """
+                ),
+                {"uid": user_id},
+            ).fetchall()
+            return [
+                {"date": r[0].isoformat(), "total_spend": float(r[1]), "receipt_count": int(r[2])}
+                for r in rows
+            ]
+        else:
+            from datetime import date as _d, timedelta
+            start = _d.today() - timedelta(days=29)
+            rows = (
+                db.query(
+                    Receipt.date.label("day"),
+                    func.coalesce(func.sum(Receipt.total), 0.0),
+                    func.count(Receipt.id),
+                )
+                .filter(
+                    Receipt.user_id == user_id,
+                    Receipt.date.isnot(None),
+                    Receipt.date >= start,
+                )
+                .group_by("day")
+                .order_by("day")
+                .all()
+            )
+            return [
+                {"date": day.isoformat() if day else None, "total_spend": float(total), "receipt_count": int(count)}
+                for day, total, count in rows
+            ]
+
+
+def low_confidence_receipts(user_id: str, threshold: float = 0.6, limit: int = 50) -> list[dict]:
+    from sqlalchemy import func, text
+    limit = max(1, min(limit, 200))
+    threshold = max(0.0, min(threshold, 1.0))
+    with SessionLocal() as db:
+        if SUPABASE_DB_URL:
+            rows = db.execute(
+                text(
+                    """
+                    SELECT id, store, store_normalized, date, total, category,
+                           confidence, ocr_conf, created_at
+                    FROM receipts
+                    WHERE user_id = :uid
+                      AND (confidence IS NULL OR confidence < :threshold)
+                    ORDER BY created_at DESC
+                    LIMIT :limit
+                    """
+                ),
+                {"uid": user_id, "threshold": threshold, "limit": limit},
+            ).fetchall()
+            return [
+                {
+                    "id": r[0],
+                    "store": r[1],
+                    "store_normalized": r[2],
+                    "date": r[3].isoformat() if r[3] else None,
+                    "total": float(r[4]) if r[4] is not None else None,
+                    "category": r[5],
+                    "confidence": float(r[6]) if r[6] is not None else None,
+                    "ocr_conf": float(r[7]) if r[7] is not None else None,
+                    "created_at": r[8].isoformat() if r[8] else None,
+                }
+                for r in rows
+            ]
+        else:
+            rows = (
+                db.query(Receipt)
+                .filter(
+                    Receipt.user_id == user_id,
+                    (Receipt.confidence.is_(None)) | (Receipt.confidence < threshold),
+                )
+                .order_by(Receipt.created_at.desc())
+                .limit(limit)
+                .all()
+            )
+            return [
+                {
+                    "id": r.id,
+                    "store": r.store,
+                    "store_normalized": r.store_normalized,
+                    "date": r.date.isoformat() if r.date else None,
+                    "total": float(r.total) if r.total is not None else None,
+                    "category": r.category,
+                    "confidence": float(r.confidence) if r.confidence is not None else None,
+                    "ocr_conf": float(r.ocr_conf) if r.ocr_conf is not None else None,
+                    "created_at": r.created_at.isoformat() if r.created_at else None,
+                }
+                for r in rows
+            ]

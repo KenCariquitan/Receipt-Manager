@@ -19,3 +19,19 @@ final summaryProvider = FutureProvider<SummaryStats>((ref) {
 final byCategoryProvider = FutureProvider<List<Map<String, dynamic>>>((ref) {
   return ref.read(apiProvider).statsByCategory();
 });
+
+final topMerchantsProvider = FutureProvider<List<MerchantStat>>((ref) {
+  return ref.read(apiProvider).topMerchants(limit: 5);
+});
+
+final weekdaySpendProvider = FutureProvider<List<WeekdayStat>>((ref) {
+  return ref.read(apiProvider).weekdaySpend();
+});
+
+final rolling30Provider = FutureProvider<List<RollingStat>>((ref) {
+  return ref.read(apiProvider).rolling30DaySpend();
+});
+
+final lowConfidenceProvider = FutureProvider<List<Receipt>>((ref) {
+  return ref.read(apiProvider).lowConfidenceReceipts(threshold: 0.6, limit: 50);
+});

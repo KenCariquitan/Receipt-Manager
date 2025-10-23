@@ -5,14 +5,14 @@ allprojects {
     }
 }
 buildscript {
-    val kotlin_version by extra("1.9.24") // Define extra property correctly
+    val kotlin_version by extra("2.1.0")
     repositories {
         google()
         mavenCentral()
     }
     dependencies {
-        classpath("com.android.tools.build:gradle:8.4.2") // Use parentheses
-        classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:$kotlin_version") // Use parentheses and the variable
+        classpath("com.android.tools.build:gradle:8.9.1")
+        classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:$kotlin_version")
     }
 }
 

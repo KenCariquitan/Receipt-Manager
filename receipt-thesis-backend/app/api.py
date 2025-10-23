@@ -1,11 +1,10 @@
 # app/api.py
 from __future__ import annotations
 
-import os, re, uuid, asyncio, math
+import os, re, uuid, asyncio, math, time
 from pathlib import Path
 from typing import Optional
 from jose import jwt
-from jose.utils import base64url_decode
 from jose.backends.cryptography_backend import CryptographyRSAKey
 import httpx
 
@@ -23,19 +22,20 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import SGDClassifier
 
 # --- project locals ---
-from .ocr import ocr_image_path, ocr_crop
-from .parser import parse_fields, extract_date  # improved total/date parsing
+from .ocr import ocr_image_path, ocr_crop, ocr_amount_from_crop
+from .ocr_google import google_vision_text, GCV_ENABLED
+from .parser import parse_fields, extract_date, parse_fields_from_ocr  # improved total/date parsing
 from .ph_rules import rule_category, normalize_store_name, correct_store_name
 from .detect import detect_fields
 from .db import (
     init_db, insert_receipt, list_receipts,
     stats_by_category, stats_by_month, stats_summary,
+    top_merchants_current_month, weekday_spend,
+    rolling_30_day_spend, low_confidence_receipts,
     SessionLocal, Receipt
 )
 
-import httpx
 from dotenv import load_dotenv
-from jose import jwt
 
 load_dotenv()  # load .env if present
 
@@ -58,20 +58,23 @@ OCR_SPACE_ENABLED = os.getenv("OCR_SPACE_ENABLED", "false").lower() == "true"
 
 # ================== Supabase Auth (JWT) ==================
 
+SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_JWKS_URL = os.getenv("SUPABASE_JWKS_URL")
 SUPABASE_PROJECT_REF= os.getenv("SUPABASE_PROJECT_REF")
 SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY")
 _JWKS_CACHE: Optional[dict] = None  
+_USER_CACHE: dict[str, tuple[dict, float]] = {}
+_CACHE_GRACE = 10  # seconds to subtract from token expiry when caching
+_CACHE_DEFAULT_TTL = 300  # fallback cache TTL (5 minutes)
 
 async def _get_jwks():
     global _JWKS_CACHE
+    if not SUPABASE_JWKS_URL:
+        return None
     if _JWKS_CACHE is None:
-        if not SUPABASE_JWKS_URL:
-            raise RuntimeError("SUPABASE_PROJECT_REF not set")
         headers = {"apikey": SUPABASE_ANON_KEY} if SUPABASE_ANON_KEY else {}
-        async with httpx.AsyncClient(timeout=10) as c:
-            resp = await c.get(SUPABASE_JWKS_URL)
-            esp = await c.get(SUPABASE_JWKS_URL, headers=headers)
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(SUPABASE_JWKS_URL, headers=headers)
             resp.raise_for_status()
             _JWKS_CACHE = resp.json()
     return _JWKS_CACHE
@@ -82,41 +85,108 @@ def _get_kid(token: str) -> Optional[str]:
         return header.get("kid")
     except Exception:
         return None
+async def _fetch_supabase_user(token: str) -> dict:
+    """
+    Fallback auth validation via Supabase REST when JWKS is unavailable.
+    """
+    if not SUPABASE_URL or not SUPABASE_ANON_KEY:
+        raise HTTPException(status_code=500, detail="Supabase URL/anon key not configured")
+
+    user_url = SUPABASE_URL.rstrip("/") + "/auth/v1/user"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "apikey": SUPABASE_ANON_KEY,
+    }
+    async with httpx.AsyncClient(timeout=10) as client:
+        resp = await client.get(user_url, headers=headers)
+
+    if resp.status_code != 200:
+        detail = "Supabase token invalid"
+        try:
+            data = resp.json()
+            detail = data.get("message") or data.get("error_description") or detail
+        except Exception:
+            pass
+        raise HTTPException(status_code=401, detail=detail)
+
+    user = resp.json()
+    claims = {}
+    try:
+        claims = jwt.get_unverified_claims(token)
+    except Exception:
+        claims = {}
+
+    payload = {
+        "sub": user.get("id") or claims.get("sub"),
+        "email": user.get("email") or claims.get("email"),
+        "app_metadata": user.get("app_metadata") or claims.get("app_metadata", {}),
+        "user_metadata": user.get("user_metadata") or claims.get("user_metadata", {}),
+        "supabase_user": user,
+        **{k: v for k, v in claims.items() if k not in {"sub", "email", "app_metadata", "user_metadata"}},
+    }
+    return payload
+
+def _cache_lookup(token: str) -> Optional[dict]:
+    entry = _USER_CACHE.get(token)
+    if not entry:
+        return None
+    payload, expires_at = entry
+    if expires_at is None or expires_at > time.time():
+        return payload
+    _USER_CACHE.pop(token, None)
+    return None
+
+def _cache_store(token: str, payload: dict):
+    exp_claim = payload.get("exp")
+    ttl = _CACHE_DEFAULT_TTL
+    now = time.time()
+    if isinstance(exp_claim, (int, float)):
+        ttl = max(0, exp_claim - now - _CACHE_GRACE)
+    expires_at = now + ttl if ttl > 0 else now + _CACHE_DEFAULT_TTL
+    _USER_CACHE[token] = (payload, expires_at)
+
 async def get_current_user(request: Request) -> dict:
     auth = request.headers.get("authorization")
     if not auth or not auth.lower().startswith("bearer "):
         raise HTTPException(status_code=401, detail="Missing Bearer token")
     token = auth.split(" ", 1)[1].strip()
-    payload = jwt.get_unverified_claims(token)  # WARNING: no signature check
-    return payload
 
-    # # Get JWKS from Supabase
-    # async with httpx.AsyncClient(timeout=10) as client:
-    #     resp = await client.get(SUPABASE_JWKS_URL)
-    #     resp.raise_for_status()
-    #     jwks = resp.json()
+    cached = _cache_lookup(token)
+    if cached is not None:
+        return cached
 
-    # # Match kid
-    # header = jwt.get_unverified_header(token)
-    # kid = header.get("kid")
-    # jwk = next((k for k in jwks["keys"] if k["kid"] == kid), None)
-    # if not jwk:
-    #     raise HTTPException(status_code=401, detail="Invalid token (kid)")
+    payload: Optional[dict] = None
 
-    # # Convert JWK → RSA key
-    # public_key = CryptographyRSAKey(jwk)
+    try:
+        jwks = await _get_jwks()
+    except Exception:
+        jwks = None
 
-    # try:
-    #     payload = jwt.decode(
-    #         token,
-    #         public_key,
-    #         algorithms=["RS256"],
-    #         options={"verify_aud": False}
-    #     )
-    # except Exception as e:
-    #     raise HTTPException(status_code=401, detail=f"Invalid token: {e}")
+    if jwks and jwks.get("keys"):
+        kid = _get_kid(token)
+        if kid:
+            jwk = next((k for k in jwks["keys"] if k.get("kid") == kid), None)
+            if jwk is not None:
+                public_key = CryptographyRSAKey(jwk)
+                try:
+                    payload = jwt.decode(
+                        token,
+                        public_key,
+                        algorithms=["RS256"],
+                        options={"verify_aud": False},
+                    )
+                except Exception:
+                    payload = None
 
-    # return payload  # has "sub" (user_id), "email", etc.
+    if payload is None:
+        payload = await _fetch_supabase_user(token)
+
+    if payload is None:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+    _cache_store(token, payload)
+
+    return payload  # has "sub", "email", etc.
 
 # ----------------- constants / paths -----------------
 DATA = Path(__file__).resolve().parents[1] / "data"
@@ -180,26 +250,16 @@ async def ocr_space_bytes(img_bytes: bytes, filename: str = "receipt.jpg", lang:
     return {"ok": ok, "text": text or "", "raw": j, "error": err, "http": http_code}
 
 # ================== reconcile fields ===================
-def resolve_fields(tess_text: str, tess_conf: Optional[float], ocrs: dict) -> tuple[Optional[str], Optional[float], Optional[str], str]:
+def resolve_fields(
+    tess_rec: dict,
+    tess_conf: Optional[float],
+    ocrs: dict,
+    vision: dict,
+) -> tuple[Optional[str], Optional[float], Optional[str], str]:
     """
-    Compare Tesseract vs OCR.space parsing (both pass through the same parser)
-    and produce final (store, total, date, source_tag).
-    Policy:
-      - If OCR.space ok and disagrees, prefer OCR.space.
-      - If both agree, mark 'consensus'.
-      - If OCR.space fails/disabled, use Tesseract.
+    Compare outputs from Tesseract, OCR.space, and (optionally) Google Vision.
+    Return the best (store, total, date, source_tag).
     """
-    # Parse Tesseract text
-    t_store, t_total, t_date = parse_fields(tess_text)
-
-    s_store = s_total = s_date = None
-    if ocrs.get("ok") and ocrs.get("text"):
-        s_store, s_total, s_date = parse_fields(ocrs["text"])
-
-    def eq_store(a, b):
-        if not a or not b:
-            return False
-        return a.strip().upper() == b.strip().upper()
 
     def close_amt(a, b):
         if a is None or b is None:
@@ -209,24 +269,102 @@ def resolve_fields(tess_text: str, tess_conf: Optional[float], ocrs: dict) -> tu
         except Exception:
             return False
 
-    agree_store = eq_store(t_store, s_store)
-    agree_total = close_amt(t_total, s_total)
-    agree_date = (t_date == s_date) and (t_date is not None)
+    def eq_store(a, b):
+        if not a or not b:
+            return False
+        return a.strip().upper() == b.strip().upper()
 
-    if ocrs.get("ok"):
-        if not (agree_store and agree_total and agree_date):
-            source = "ocr_space"
-            store = s_store or t_store
-            total = s_total if s_total is not None else t_total
-            date_iso = s_date or t_date
-        else:
-            source = "consensus"
-            store, total, date_iso = t_store, t_total, t_date
-    else:
-        source = "tesseract"
-        store, total, date_iso = t_store, t_total, t_date
+    candidates = []
 
-    return store, total, date_iso, source
+    tess_text = tess_rec.get("text", "") if isinstance(tess_rec, dict) else str(tess_rec or "")
+    t_store, t_total, t_date = parse_fields_from_ocr(tess_rec if isinstance(tess_rec, dict) else {"text": tess_text})
+    fb_store, fb_total, fb_date = parse_fields(tess_text)
+    t_store = t_store or fb_store
+    t_total = t_total if t_total is not None else fb_total
+    t_date = t_date or fb_date
+
+    candidates.append({
+        "source": "tesseract",
+        "store": t_store,
+        "total": t_total,
+        "date": t_date,
+        "confidence": tess_conf or 0.0,
+        "priority": 0,
+    })
+
+    if ocrs.get("ok") and ocrs.get("text"):
+        s_store, s_total, s_date = parse_fields(ocrs["text"])
+        candidates.append({
+            "source": "ocr_space",
+            "store": s_store,
+            "total": s_total,
+            "date": s_date,
+            "confidence": 60.0,  # heuristic confidence
+            "priority": 1,
+        })
+
+    if vision.get("ok") and vision.get("text"):
+        v_store, v_total, v_date = parse_fields(vision["text"])
+        v_conf = None
+        try:
+            v_conf = vision.get("info", {}).get("confidence")
+        except Exception:
+            v_conf = None
+        candidates.append({
+            "source": "vision",
+            "store": v_store,
+            "total": v_total,
+            "date": v_date,
+            "confidence": (v_conf or 0.0) * 100 if isinstance(v_conf, float) else 50.0,
+            "priority": 2,
+        })
+
+    # safety: ensure at least tesseract candidate exists
+    if not candidates:
+        return None, None, None, "unknown"
+
+    def score(cand):
+        score = 0.0
+        if cand["store"]:
+            score += 2.0
+        if cand["total"] is not None:
+            score += 3.5
+        if cand["date"]:
+            score += 1.2
+        score += min(cand.get("confidence") or 0.0, 100.0) / 40.0
+        score += max(0.0, 3.0 - cand["priority"])
+        return score
+
+    best = max(candidates, key=score)
+
+    # Detect consensus (any other candidate matching best)
+    consensus = False
+    for cand in candidates:
+        if cand is best:
+            continue
+        same_store = eq_store(cand["store"], best["store"])
+        same_total = close_amt(cand["total"], best["total"])
+        same_date = (cand["date"] == best["date"]) and best["date"] is not None
+        if same_store and same_total and same_date:
+            consensus = True
+            break
+
+    source_tag = "consensus" if consensus else best["source"]
+
+    # Fill missing fields from higher-priority candidates (tesseract -> ocr -> vision)
+    sorted_candidates = sorted(candidates, key=lambda c: c["priority"])
+    store = best["store"]
+    total = best["total"]
+    date_iso = best["date"]
+    for cand in sorted_candidates:
+        if store is None and cand["store"]:
+            store = cand["store"]
+        if total is None and cand["total"] is not None:
+            total = cand["total"]
+        if date_iso is None and cand["date"]:
+            date_iso = cand["date"]
+
+    return store, total, date_iso, source_tag
 
 # ================== API Schemas ===================
 class TextIn(BaseModel):
@@ -249,6 +387,7 @@ def health():
         "has_model": bool(clf is not None),
         "model_classes": classes,
         "ocr_space": OCR_SPACE_ENABLED,
+        "vision": GCV_ENABLED,
         "auth": bool(SUPABASE_PROJECT_REF),
     }
 
@@ -299,6 +438,8 @@ async def upload_receipt(file: UploadFile = File(...), user=Depends(get_current_
 
     fields = []
     yolo_store = yolo_total = yolo_date = None
+    yolo_total_text = None
+    yolo_total_attempts: list[str] = []
     try:
         fields = detect_fields(img)  # [] if model missing or no detections
         if fields:
@@ -310,11 +451,12 @@ async def upload_receipt(file: UploadFile = File(...), user=Depends(get_current_
             # Total
             best = max([f for f in fields if f["name"] == "Total"], key=lambda x: x["conf"], default=None)
             if best:
-                raw = ocr_crop(img, best["box"], psm=7, allowlist="0123456789.,₱PHPPhp ")
-                m = re.search(r"([0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]{2})|[0-9]+(?:\.[0-9]{2}))",
-                              raw.replace("PHP", "").replace("Php", ""))
-                if m:
-                    yolo_total = float(m.group(1).replace(",", ""))
+                yolo_total_val, yolo_text, tries = ocr_amount_from_crop(img, best["box"])
+                if yolo_total_val is not None:
+                    yolo_total = yolo_total_val
+                    yolo_total_text = yolo_text
+                if tries:
+                    yolo_total_attempts = tries
 
             # Date
             best = max([f for f in fields if f["name"] == "Date"], key=lambda x: x["conf"], default=None)
@@ -330,7 +472,7 @@ async def upload_receipt(file: UploadFile = File(...), user=Depends(get_current_
     tess_conf = rec.get("mean_conf", 0.0)
 
     # ---------- Decide if we should call OCR.space (save credits) ----------
-    store_t, total_t, date_t = parse_fields(tess_text)
+    store_t, total_t, date_t = parse_fields_from_ocr(rec)
     need_ocr_space = (tess_conf is None or tess_conf < 45) or (store_t is None or total_t is None)
 
     if OCR_SPACE_ENABLED and need_ocr_space:
@@ -338,8 +480,21 @@ async def upload_receipt(file: UploadFile = File(...), user=Depends(get_current_
     else:
         ocrs = {"ok": False, "text": "", "error": None, "http": None}
 
-    # ---------- Reconcile Tesseract vs OCR.space ----------
-    store_r, total_r, date_r, source_tag = resolve_fields(tess_text, tess_conf, ocrs)
+    # ---------- Google Vision fallback ----------
+    vision_used = False
+    vision_res = {"ok": False, "text": "", "error": None, "info": None}
+    if GCV_ENABLED:
+        need_vision = (store_t is None or total_t is None or date_t is None or (tess_conf or 0) < 40)
+        if ocrs.get("ok") and ocrs.get("text"):
+            s_store, s_total, s_date = parse_fields(ocrs["text"])
+            if s_store and s_total and s_date:
+                need_vision = False
+        if need_vision:
+            vision_res = await google_vision_text(content)
+            vision_used = True
+
+    # ---------- Reconcile all OCR sources ----------
+    store_r, total_r, date_r, source_tag = resolve_fields(rec, tess_conf, ocrs, vision_res)
 
     # ---------- Prefer YOLO crops when present ----------
     store = yolo_store or store_r
@@ -391,6 +546,8 @@ async def upload_receipt(file: UploadFile = File(...), user=Depends(get_current_
         "store_normalized": store_norm,
         "date": date_iso,
         "total": total,
+        "yolo_total_text": yolo_total_text,
+        "yolo_total_attempts": yolo_total_attempts,
         "category": category,
         "confidence": confidence,
         "category_source": source,
@@ -402,6 +559,10 @@ async def upload_receipt(file: UploadFile = File(...), user=Depends(get_current_
         "ocr_space_ok": ocrs.get("ok", False),
         "ocr_space_http": ocrs.get("http"),
         "ocr_space_err": ocrs.get("error"),
+        "vision_used": vision_used,
+        "vision_ok": vision_res.get("ok", False),
+        "vision_err": vision_res.get("error"),
+        "vision_conf": (vision_res.get("info") or {}).get("confidence") if isinstance(vision_res.get("info"), dict) else None,
         "ocr_source": source_tag,  # "tesseract" | "ocr_space" | "consensus"
     }
 
@@ -459,6 +620,26 @@ def get_stats_by_category(user=Depends(get_current_user)):
 @app.get("/stats/by_month")
 def get_stats_by_month(year: int, user=Depends(get_current_user)):
     return stats_by_month(year, user_id=user.get("sub"))
+
+
+@app.get("/stats/top_merchants")
+def get_top_merchants(limit: int = 5, user=Depends(get_current_user)):
+    return top_merchants_current_month(user_id=user.get("sub"), limit=limit)
+
+
+@app.get("/stats/weekday_spend")
+def get_weekday_spend(user=Depends(get_current_user)):
+    return weekday_spend(user_id=user.get("sub"))
+
+
+@app.get("/stats/rolling_30")
+def get_rolling_30(user=Depends(get_current_user)):
+    return rolling_30_day_spend(user_id=user.get("sub"))
+
+
+@app.get("/receipts/low_confidence")
+def get_low_confidence(threshold: float = 0.6, limit: int = 50, user=Depends(get_current_user)):
+    return low_confidence_receipts(user_id=user.get("sub"), threshold=threshold, limit=limit)
 
 @app.patch("/receipts/{rid}")
 def update_receipt(rid: str, upd: ReceiptUpdate, user=Depends(get_current_user)):

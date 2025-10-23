@@ -114,3 +114,67 @@ class SummaryStats {
         topCategoryTotal: (j['top_category_total'] as num?)?.toDouble() ?? 0.0,
       );
 }
+
+class MerchantStat {
+  final String store;
+  final int receiptCount;
+  final double totalSpend;
+
+  MerchantStat({
+    required this.store,
+    required this.receiptCount,
+    required this.totalSpend,
+  });
+
+  factory MerchantStat.fromJson(Map<String, dynamic> j) => MerchantStat(
+        store: (j['store'] ?? 'Unknown') as String,
+        receiptCount: j['receipt_count'] is int
+            ? j['receipt_count'] as int
+            : (j['receipt_count'] as num?)?.toInt() ?? 0,
+        totalSpend: (j['total_spend'] as num?)?.toDouble() ?? 0.0,
+      );
+}
+
+class WeekdayStat {
+  final int weekday; // 0 = Sunday (Postgres) / SQLite, align with DateTime.weekday-1
+  final double totalSpend;
+  final int receiptCount;
+
+  WeekdayStat({
+    required this.weekday,
+    required this.totalSpend,
+    required this.receiptCount,
+  });
+
+  factory WeekdayStat.fromJson(Map<String, dynamic> j) => WeekdayStat(
+        weekday: j['weekday'] is int ? j['weekday'] as int : (j['weekday'] as num?)?.toInt() ?? 0,
+        totalSpend: (j['total_spend'] as num?)?.toDouble() ?? 0.0,
+        receiptCount: j['receipt_count'] is int
+            ? j['receipt_count'] as int
+            : (j['receipt_count'] as num?)?.toInt() ?? 0,
+      );
+}
+
+class RollingStat {
+  final DateTime date;
+  final double totalSpend;
+  final int receiptCount;
+
+  RollingStat({
+    required this.date,
+    required this.totalSpend,
+    required this.receiptCount,
+  });
+
+  factory RollingStat.fromJson(Map<String, dynamic> j) {
+    final raw = j['date'] as String?;
+    final parsed = raw != null ? DateTime.tryParse(raw) : null;
+    return RollingStat(
+      date: parsed ?? DateTime.now(),
+      totalSpend: (j['total_spend'] as num?)?.toDouble() ?? 0.0,
+      receiptCount: j['receipt_count'] is int
+          ? j['receipt_count'] as int
+          : (j['receipt_count'] as num?)?.toInt() ?? 0,
+    );
+  }
+}

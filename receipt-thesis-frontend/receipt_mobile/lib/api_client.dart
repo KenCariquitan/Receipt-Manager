@@ -75,6 +75,54 @@ class ApiClient {
     return arr.cast<Map<String, dynamic>>();
   }
 
+  Future<List<MerchantStat>> topMerchants({int limit = 5}) async {
+    final uri = Uri.parse('$_base/stats/top_merchants?limit=$limit');
+    final r = await http
+        .get(uri, headers: await _authHeaders())
+        .timeout(const Duration(seconds: 15));
+    final arr = _decodeJson<List>(r);
+    return arr
+        .map((e) => MerchantStat.fromJson(e as Map<String, dynamic>))
+        .toList();
+  }
+
+  Future<List<WeekdayStat>> weekdaySpend() async {
+    final r = await http
+        .get(Uri.parse('$_base/stats/weekday_spend'),
+            headers: await _authHeaders())
+        .timeout(const Duration(seconds: 15));
+    final arr = _decodeJson<List>(r);
+    return arr
+        .map((e) => WeekdayStat.fromJson(e as Map<String, dynamic>))
+        .toList();
+  }
+
+  Future<List<RollingStat>> rolling30DaySpend() async {
+    final r = await http
+        .get(Uri.parse('$_base/stats/rolling_30'),
+            headers: await _authHeaders())
+        .timeout(const Duration(seconds: 15));
+    final arr = _decodeJson<List>(r);
+    return arr
+        .map((e) => RollingStat.fromJson(e as Map<String, dynamic>))
+        .toList();
+  }
+
+  Future<List<Receipt>> lowConfidenceReceipts({
+    double threshold = 0.6,
+    int limit = 50,
+  }) async {
+    final uri = Uri.parse(
+        '$_base/receipts/low_confidence?threshold=$threshold&limit=$limit');
+    final r = await http
+        .get(uri, headers: await _authHeaders())
+        .timeout(const Duration(seconds: 20));
+    final arr = _decodeJson<List>(r);
+    return arr
+        .map((e) => Receipt.fromJson(e as Map<String, dynamic>))
+        .toList();
+  }
+
   Future<bool> sendFeedback({
     required String text,
     required String trueLabel,

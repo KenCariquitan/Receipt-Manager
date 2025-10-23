@@ -7,7 +7,7 @@ OCR_URL = os.getenv("OCR_SPACE_URL", "https://api.ocr.space/parse/image")
 OCR_KEY = os.getenv("OCR_SPACE_API_KEY", "")
 OCR_ENABLED = os.getenv("OCR_SPACE_ENABLED", "false").lower() == "true"
 
-MAX_BYTES = 1_200_000  # ~1.2MB cap for OCR.space (free plan tolerance)
+MAX_BYTES = 1_000_000  # hard cap ~1MB for OCR.space free tier
 
 def _maybe_downscale(img_bytes: bytes) -> bytes:
     if len(img_bytes) <= MAX_BYTES:
