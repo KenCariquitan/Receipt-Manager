@@ -121,7 +121,7 @@ class _UploadPageState extends ConsumerState<UploadPage> {
           suffix +
           originalPath.substring(dot);
     }
-    return '${originalPath}${suffix}.jpg';
+    return '$originalPath$suffix.jpg';
   }
 
   Future<void> _saveCorrection() async {

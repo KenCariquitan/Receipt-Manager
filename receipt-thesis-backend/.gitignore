@@ -29,10 +29,6 @@ data/dataset.csv
 data/feedback.csv
 data/receipts.db
 
-# Models (generated)
-models/*.joblib
-models/*.pt
-models/*.onnx
 
 # Training outputs
 runs/

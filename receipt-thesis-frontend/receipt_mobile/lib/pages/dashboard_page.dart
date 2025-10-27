@@ -68,7 +68,7 @@ class DashboardPage extends ConsumerWidget {
                   child: BarChart(
                     BarChartData(
                       borderData: FlBorderData(show: false),
-                      gridData: FlGridData(drawHorizontalLine: true),
+                      gridData: const FlGridData(drawHorizontalLine: true),
                       titlesData: FlTitlesData(
                         leftTitles: const AxisTitles(
                           sideTitles: SideTitles(
@@ -84,9 +84,7 @@ class DashboardPage extends ConsumerWidget {
                               return Padding(
                                 padding: const EdgeInsets.only(top: 6),
                                 child: Text(
-                                  i >= 0 && i < labels.length
-                                      ? labels[i]
-                                      : '',
+                                  i >= 0 && i < labels.length ? labels[i] : '',
                                   style: const TextStyle(fontSize: 10),
                                 ),
                               );
@@ -125,8 +123,8 @@ class DashboardPage extends ConsumerWidget {
                             leading: CircleAvatar(
                               child: Text(
                                 _initialForStore(m.store),
-                                style:
-                                    const TextStyle(fontWeight: FontWeight.bold),
+                                style: const TextStyle(
+                                    fontWeight: FontWeight.bold),
                               ),
                             ),
                             title: Text(m.store),
@@ -165,7 +163,7 @@ class DashboardPage extends ConsumerWidget {
                   child: BarChart(
                     BarChartData(
                       borderData: FlBorderData(show: false),
-                      gridData: FlGridData(drawHorizontalLine: true),
+                      gridData: const FlGridData(drawHorizontalLine: true),
                       titlesData: FlTitlesData(
                         leftTitles: const AxisTitles(
                           sideTitles: SideTitles(
@@ -207,7 +205,8 @@ class DashboardPage extends ConsumerWidget {
               error: (e, _) => Text('Error: $e'),
               data: (rows) {
                 if (rows.isEmpty) return const Text('No data yet.');
-                final sorted = [...rows]..sort((a, b) => a.date.compareTo(b.date));
+                final sorted = [...rows]
+                  ..sort((a, b) => a.date.compareTo(b.date));
                 final spots = <FlSpot>[];
                 for (var i = 0; i < sorted.length; i++) {
                   spots.add(FlSpot(i.toDouble(), sorted[i].totalSpend));
@@ -222,7 +221,7 @@ class DashboardPage extends ConsumerWidget {
                       maxX: spots.isNotEmpty ? spots.last.x : 0,
                       minY: 0,
                       maxY: maxY > 0 ? maxY * 1.1 : 1,
-                      gridData: FlGridData(drawHorizontalLine: true),
+                      gridData: const FlGridData(drawHorizontalLine: true),
                       borderData: FlBorderData(show: false),
                       titlesData: FlTitlesData(
                         leftTitles: const AxisTitles(
@@ -328,7 +327,8 @@ class DashboardPage extends ConsumerWidget {
   static Widget _lowConfidenceTile(Receipt r) {
     return ListTile(
       title: Text(r.store ?? 'Unknown store'),
-      subtitle: Text('${r.date ?? 'Unknown date'} • ${r.category ?? 'Uncategorised'}'),
+      subtitle: Text(
+          '${r.date ?? 'Unknown date'} • ${r.category ?? 'Uncategorised'}'),
       trailing: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         crossAxisAlignment: CrossAxisAlignment.end,
@@ -345,8 +345,7 @@ class DashboardPage extends ConsumerWidget {
     );
   }
 
-  static String _formatCurrency(double value) =>
-      '₱${value.toStringAsFixed(2)}';
+  static String _formatCurrency(double value) => '₱${value.toStringAsFixed(2)}';
 
   static String _weekdayLabel(int dow) {
     const names = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
