@@ -25,12 +25,20 @@ class _HomePageState extends State<HomePage> {
               leading: const Icon(Icons.logout, color: Colors.red),
               title: const Text("Logout"),
               onTap: () async {
-                await Supabase.instance.client.auth.signOut();
-                if (mounted) {
-                  Navigator.pop(ctx); // close sheet
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('Signed out')),
-                  );
+                Navigator.of(ctx).pop(); // close sheet immediately
+                try {
+                  await Supabase.instance.client.auth.signOut();
+                  if (mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text('Signed out')),
+                    );
+                  }
+                } catch (e) {
+                  if (mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(content: Text('Sign out failed: $e')),
+                    );
+                  }
                 }
               },
             ),
