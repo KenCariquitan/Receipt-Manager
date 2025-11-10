@@ -1,13 +1,13 @@
-import 'dart:io';
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:http/http.dart' as http;
-import 'package:flutter_image_compress/flutter_image_compress.dart';
 
 import '../api_client.dart';
 import '../models.dart';
 import '../widgets/receipt_card.dart';
+import '../strategies/compress_strategy.dart';
 
 final apiProvider = Provider<ApiClient>((ref) => ApiClient());
 
@@ -19,119 +19,168 @@ class UploadPage extends ConsumerStatefulWidget {
 
 class _UploadPageState extends ConsumerState<UploadPage> {
   final _picker = ImagePicker();
+  static const CompressionContext _compressionContext = CompressionContext(
+    fastStrategy: FastCompressStrategy(),
+    qualityStrategy: QualityCompressStrategy(),
+    originalStrategy: OriginalCompressStrategy(),
+    forceOriginal: true,
+  );
+  final TextEditingController _storeController = TextEditingController();
+  final TextEditingController _totalController = TextEditingController();
+  final TextEditingController _dateController = TextEditingController();
   UploadResult? result;
   bool loading = false;
   String? error;
   String? selectedLabel;
+  ReceiptJobStatus? currentJob;
+
+  @override
+  void dispose() {
+    _storeController.dispose();
+    _totalController.dispose();
+    _dateController.dispose();
+    super.dispose();
+  }
 
   Future<void> _pick(ImageSource source) async {
     setState(() {
       loading = true;
       error = null;
       result = null;
+      selectedLabel = null;
+      currentJob = null;
     });
+    _storeController.clear();
+    _totalController.clear();
+    _dateController.clear();
 
     try {
-      // Compress at pick time (quality + resize)
-      final picked = await _picker.pickImage(
-        source: source,
-        imageQuality: 82, // 0-100, lower = smaller size
-        maxWidth: 1600,
-        maxHeight: 1600,
-      );
+      final picked = await _picker.pickImage(source: source);
       if (picked == null) {
         setState(() => loading = false);
         return;
       }
 
-      final preparedFile = await _ensureUnderLimit(picked);
+      final strategy = _compressionContext.choose(source: source);
+      final preparedFile = await strategy.run(picked);
 
       final sizeKb = (await preparedFile.length()) / 1024;
       // ignore: avoid_print
       print(
           "Prepared file: ${preparedFile.path}, size=${sizeKb.toStringAsFixed(1)} KB");
 
-      // Wrap in multipart for upload
-      final file = await http.MultipartFile.fromPath('file', preparedFile.path,
-          filename: picked.name);
+      final file = await http.MultipartFile.fromPath(
+        'file',
+        preparedFile.path,
+        filename: picked.name,
+      );
 
       final api = ref.read(apiProvider);
-      final res = await api.uploadReceipt(file);
+      final queued = await api.uploadReceipt(file);
+      if (!mounted) return;
+      setState(() => currentJob = queued);
+
+      ReceiptJobStatus status = queued;
+      if (!queued.isFinal) {
+        status = await api.waitForJob(
+          queued.jobId,
+          onUpdate: (s) {
+            if (!mounted) return;
+            setState(() => currentJob = s);
+          },
+        );
+      }
+
+      if (!mounted) return;
+      if (status.status == 'completed' && status.result != null) {
+        final r = status.result!;
+        _storeController.text = r.store ?? '';
+        _totalController.text =
+            r.total != null ? r.total!.toStringAsFixed(2) : '';
+        _dateController.text = r.date ?? '';
+        setState(() {
+          result = r;
+          selectedLabel = r.category;
+          currentJob = status;
+        });
+      } else if (status.status == 'failed') {
+        setState(() {
+          error = status.error ?? 'Processing failed';
+          currentJob = status;
+        });
+      } else {
+        setState(() {
+          error = 'Processing did not finish (status: ${status.status}).';
+          currentJob = status;
+        });
+      }
+    } on TimeoutException catch (e) {
+      if (!mounted) return;
       setState(() {
-        result = res;
-        selectedLabel = res.category;
+        error = e.message ?? 'Processing timed out';
       });
     } catch (e) {
+      if (!mounted) return;
       setState(() {
         error = e.toString();
       });
     } finally {
-      setState(() {
-        loading = false;
-      });
-    }
-  }
-
-  Future<File> _ensureUnderLimit(XFile picked) async {
-    const maxBytes = 1024 * 1024; // 1 MB hard cap
-    final original = File(picked.path);
-    if (!await original.exists()) {
-      return original;
-    }
-
-    var current = original;
-    var length = await current.length();
-    if (length <= maxBytes) return current;
-
-    final qualities = <int>[85, 75, 65, 55, 45, 35, 25, 20];
-    File best = current;
-
-    for (final quality in qualities) {
-      final targetPath = _deriveCompressedPath(original.path, quality);
-      final targetFile = File(targetPath);
-      if (await targetFile.exists()) {
-        await targetFile.delete();
-      }
-      final compressed = await FlutterImageCompress.compressAndGetFile(
-        original.path,
-        targetPath,
-        quality: quality,
-        minWidth: 1600,
-        minHeight: 1600,
-      );
-      if (compressed == null) {
-        continue;
-      }
-      final candidate = File(compressed.path);
-      final candidateSize = await candidate.length();
-      best = candidate;
-      if (candidateSize <= maxBytes) {
-        break;
+      if (mounted) {
+        setState(() {
+          loading = false;
+        });
       }
     }
-
-    return best;
-  }
-
-  String _deriveCompressedPath(String originalPath, int quality) {
-    final dot = originalPath.lastIndexOf('.');
-    final suffix = '_cmp$quality';
-    if (dot != -1) {
-      return originalPath.substring(0, dot) +
-          suffix +
-          originalPath.substring(dot);
-    }
-    return '$originalPath$suffix.jpg';
   }
 
   Future<void> _saveCorrection() async {
     if (result == null || selectedLabel == null) return;
+
+    final storeInput = _storeController.text.trim();
+    final totalInput = _totalController.text.trim();
+    final dateInput = _dateController.text.trim();
+
+    double? totalValue;
+    if (totalInput.isNotEmpty) {
+      final cleaned = totalInput.replaceAll(',', '');
+      totalValue = double.tryParse(cleaned);
+      if (totalValue == null) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Total must be a valid number.')),
+          );
+        }
+        return;
+      }
+    }
+
+    String? dateIso;
+    if (dateInput.isNotEmpty) {
+      final parsed = DateTime.tryParse(dateInput);
+      if (parsed == null) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+                content: Text('Date must be in ISO format (YYYY-MM-DD).')),
+          );
+        }
+        return;
+      }
+      dateIso = parsed.toIso8601String().split('T').first;
+    }
+
     try {
       setState(() => loading = true);
       final api = ref.read(apiProvider);
 
       // Update DB
-      await api.updateReceipt(id: result!.id, category: selectedLabel);
+      await api.updateReceipt(
+        id: result!.id,
+        category: selectedLabel,
+        store: storeInput.isEmpty ? null : storeInput,
+        total: totalValue,
+        date: dateIso ?? (dateInput.isEmpty ? null : dateInput),
+      );
 
       // Optional: also send feedback to improve ML
       await api.sendFeedback(text: result!.text, trueLabel: selectedLabel!);
@@ -183,6 +232,31 @@ class _UploadPageState extends ConsumerState<UploadPage> {
             if (loading) const LinearProgressIndicator(),
             if (error != null)
               Text(error!, style: const TextStyle(color: Colors.red)),
+            if (currentJob != null)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 8),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Job ${currentJob!.jobId} - ${currentJob!.status}',
+                      style: Theme.of(context).textTheme.bodyMedium,
+                    ),
+                    if (currentJob!.status != 'completed' &&
+                        currentJob!.status != 'failed')
+                      const Text(
+                        'Processing... you can leave this screen and return later.',
+                        style: TextStyle(fontStyle: FontStyle.italic),
+                      ),
+                    if (currentJob!.error != null &&
+                        currentJob!.error!.isNotEmpty)
+                      Text(
+                        currentJob!.error!,
+                        style: const TextStyle(color: Colors.red),
+                      ),
+                  ],
+                ),
+              ),
             const SizedBox(height: 12),
             if (result != null)
               Expanded(
@@ -193,6 +267,9 @@ class _UploadPageState extends ConsumerState<UploadPage> {
                       selectedCategory: selectedLabel,
                       onCategoryChanged: (v) =>
                           setState(() => selectedLabel = v),
+                      storeController: _storeController,
+                      totalController: _totalController,
+                      dateController: _dateController,
                     ),
                     const SizedBox(height: 12),
                     FilledButton(
@@ -208,3 +285,8 @@ class _UploadPageState extends ConsumerState<UploadPage> {
     );
   }
 }
+
+
+
+
+

@@ -1,7 +1,7 @@
 # app/api.py
 from __future__ import annotations
 
-import os, re, uuid, asyncio, math, time
+import os, re, uuid, asyncio, math, time, logging
 from pathlib import Path
 from typing import Optional
 from jose import jwt
@@ -22,8 +22,9 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import SGDClassifier
 
 # --- project locals ---
-from .ocr import ocr_image_path, ocr_crop, ocr_amount_from_crop
-from .ocr_google import google_vision_text, GCV_ENABLED
+from .ocr import ocr_crop, ocr_amount_from_crop
+from .ocr_google import GCV_ENABLED
+from .ocr_paddle_vl import paddle_vl_text
 from .parser import parse_fields, extract_date, parse_fields_from_ocr  # improved total/date parsing
 from .ph_rules import rule_category, normalize_store_name, correct_store_name
 from .detect import detect_fields
@@ -33,6 +34,13 @@ from .db import (
     top_merchants_current_month, weekday_spend,
     rolling_30_day_spend, low_confidence_receipts,
     SessionLocal, Receipt
+)
+from .ocr_strategies import (
+    OCRContext,
+    TesseractStrategy,
+    OCRSpaceStrategy,
+    GoogleVisionStrategy,
+    PaddleVLStrategy,
 )
 
 from dotenv import load_dotenv
@@ -55,6 +63,89 @@ def _clean_num(x):
 OCR_SPACE_URL = os.getenv("OCR_SPACE_URL", "https://api.ocr.space/parse/image")
 OCR_SPACE_API_KEY = os.getenv("OCR_SPACE_API_KEY", "")
 OCR_SPACE_ENABLED = os.getenv("OCR_SPACE_ENABLED", "false").lower() == "true"
+TESSERACT_ENABLED = os.getenv("TESSERACT_ENABLED", "true").lower() == "true"
+PADDLE_VL_ENABLED = os.getenv("PADDLE_VL_ENABLED", "false").lower() == "true"
+
+_ocr_strategies = {}
+if TESSERACT_ENABLED:
+    _ocr_strategies["tesseract"] = TesseractStrategy()
+_ocr_strategies["ocr_space"] = OCRSpaceStrategy(enabled=OCR_SPACE_ENABLED)
+_ocr_strategies["google_vision"] = GoogleVisionStrategy(enabled=GCV_ENABLED)
+_ocr_strategies["paddle_vl"] = PaddleVLStrategy(enabled=PADDLE_VL_ENABLED)
+
+JOBS: dict[str, dict] = {}
+JOBS_LOCK = asyncio.Lock()
+
+OCR_STRATEGY_CONTEXT = OCRContext(_ocr_strategies)
+
+MAX_JOBS = 200
+
+
+async def _prune_jobs_locked():
+    if len(JOBS) <= MAX_JOBS:
+        return
+    removable = [
+        job for job in JOBS.values()
+        if job.get("status") in {"completed", "failed"}
+    ]
+    removable.sort(key=lambda j: j.get("updated_at", j.get("created_at", 0)))
+    for job in removable:
+        if len(JOBS) <= MAX_JOBS:
+            break
+        JOBS.pop(job["id"], None)
+
+
+async def _register_job(user_id: str, filename: str) -> dict:
+    now = time.time()
+    job_id = uuid.uuid4().hex
+    job = {
+        "id": job_id,
+        "user_id": user_id,
+        "filename": filename,
+        "status": "queued",
+        "created_at": now,
+        "updated_at": now,
+        "started_at": None,
+        "finished_at": None,
+        "result": None,
+        "error": None,
+    }
+    async with JOBS_LOCK:
+        JOBS[job_id] = job
+        await _prune_jobs_locked()
+    return job
+
+
+async def _update_job(job_id: str, **changes) -> Optional[dict]:
+    async with JOBS_LOCK:
+        job = JOBS.get(job_id)
+        if not job:
+            return None
+        job.update(changes)
+        job["updated_at"] = time.time()
+        return job.copy()
+
+
+async def _get_job(job_id: str) -> Optional[dict]:
+    async with JOBS_LOCK:
+        job = JOBS.get(job_id)
+        return job.copy() if job else None
+
+
+def _public_job(job: dict) -> dict:
+    safe = job.copy()
+    safe.pop("user_id", None)
+    return safe
+
+def _crop_to_bytes(img_bgr: np.ndarray, box: tuple[int, int, int, int]) -> bytes | None:
+    x1, y1, x2, y2 = box
+    crop = img_bgr[y1:y2, x1:x2]
+    if crop.size == 0:
+        return None
+    ok, encoded = cv2.imencode(".jpg", crop)
+    if not ok:
+        return None
+    return encoded.tobytes()
 
 # ================== Supabase Auth (JWT) ==================
 
@@ -255,6 +346,7 @@ def resolve_fields(
     tess_conf: Optional[float],
     ocrs: dict,
     vision: dict,
+    paddle: dict | None = None,
 ) -> tuple[Optional[str], Optional[float], Optional[str], str]:
     """
     Compare outputs from Tesseract, OCR.space, and (optionally) Google Vision.
@@ -299,8 +391,8 @@ def resolve_fields(
             "store": s_store,
             "total": s_total,
             "date": s_date,
-            "confidence": 60.0,  # heuristic confidence
-            "priority": 1,
+            "confidence": 70.0,  # heuristic confidence
+            "priority": 0.5,
         })
 
     if vision.get("ok") and vision.get("text"):
@@ -319,6 +411,16 @@ def resolve_fields(
             "priority": 2,
         })
 
+    if paddle:
+        candidates.append({
+            "source": "paddle_vl",
+            "store": paddle.get("store"),
+            "total": paddle.get("total"),
+            "date": paddle.get("date"),
+            "confidence": float(paddle.get("confidence", 85.0)),
+            "priority": -0.2,
+        })
+
     # safety: ensure at least tesseract candidate exists
     if not candidates:
         return None, None, None, "unknown"
@@ -333,6 +435,10 @@ def resolve_fields(
             score += 1.2
         score += min(cand.get("confidence") or 0.0, 100.0) / 40.0
         score += max(0.0, 3.0 - cand["priority"])
+        if cand["source"] == "ocr_space":
+            score += 0.25
+        if cand["source"] == "paddle_vl":
+            score += 0.5
         return score
 
     best = max(candidates, key=score)
@@ -388,6 +494,7 @@ def health():
         "model_classes": classes,
         "ocr_space": OCR_SPACE_ENABLED,
         "vision": GCV_ENABLED,
+        "paddle_vl": PADDLE_VL_ENABLED,
         "auth": bool(SUPABASE_PROJECT_REF),
     }
 
@@ -418,98 +525,236 @@ def classify_text(inp: TextIn):
 
 @app.post("/upload_receipt")
 async def upload_receipt(file: UploadFile = File(...), user=Depends(get_current_user)):
-    # Auth
     user_id = user.get("sub")
     if not user_id:
         raise HTTPException(status_code=401, detail="No user id in token")
 
-    # Save image to disk
     fname = file.filename or "unknown.jpg"
     tmp = DATA / "raw_images" / f"{uuid.uuid4().hex}_{fname}"
     tmp.parent.mkdir(parents=True, exist_ok=True)
+
     content = await file.read()
     tmp.write_bytes(content)
 
-    # ---------- Optional YOLO detect (best-effort) ----------
+    job = await _register_job(user_id=user_id, filename=fname)
+    asyncio.create_task(_process_job(job["id"], tmp, user_id, fname))
+    return _public_job(job)
+
+
+@app.get("/jobs/{job_id}")
+async def get_job_status(job_id: str, user=Depends(get_current_user)):
+    job = await _get_job(job_id)
+    if not job or job.get("user_id") != user.get("sub"):
+        raise HTTPException(status_code=404, detail="Job not found")
+    return _public_job(job)
+
+
+async def _process_job(job_id: str, tmp_path: Path, user_id: str, filename: str):
+    await _update_job(job_id, status="processing", started_at=time.time())
+    try:
+        result = await _process_receipt_pipeline(tmp_path, user_id, filename)
+        await _update_job(
+            job_id,
+            status="completed",
+            result=result,
+            finished_at=time.time(),
+        )
+    except Exception as exc:
+        logging.exception("Failed to process receipt job %s", job_id)
+        await _update_job(
+            job_id,
+            status="failed",
+            error=str(exc),
+            finished_at=time.time(),
+        )
+
+
+async def _process_receipt_pipeline(tmp_path: Path, user_id: str, filename: str) -> dict:
+    tmp = Path(tmp_path)
+    if not tmp.exists():
+        raise FileNotFoundError(f"Uploaded file missing: {tmp}")
+
+    content = tmp.read_bytes()
+    fname = filename
+
+    img = None
     try:
         img = cv2.imdecode(np.frombuffer(content, dtype=np.uint8), cv2.IMREAD_COLOR)
     except Exception:
+        img = None
+    if img is None:
         img = cv2.imread(str(tmp))
 
     fields = []
     yolo_store = yolo_total = yolo_date = None
     yolo_total_text = None
     yolo_total_attempts: list[str] = []
-    try:
-        fields = detect_fields(img)  # [] if model missing or no detections
-        if fields:
-            # Merchant
-            best = max([f for f in fields if f["name"] == "Merchant"], key=lambda x: x["conf"], default=None)
-            if best:
-                yolo_store = ocr_crop(img, best["box"], psm=7)
+    if img is not None:
+        try:
+            fields = detect_fields(img)
+            if fields:
+                best = max(
+                    [f for f in fields if f["name"] == "Merchant"],
+                    key=lambda x: x["conf"],
+                    default=None,
+                )
+                if best:
+                    yolo_store = ocr_crop(img, best["box"], psm=7)
 
-            # Total
-            best = max([f for f in fields if f["name"] == "Total"], key=lambda x: x["conf"], default=None)
-            if best:
-                yolo_total_val, yolo_text, tries = ocr_amount_from_crop(img, best["box"])
-                if yolo_total_val is not None:
-                    yolo_total = yolo_total_val
-                    yolo_total_text = yolo_text
-                if tries:
-                    yolo_total_attempts = tries
+                best = max(
+                    [f for f in fields if f["name"] == "Total"],
+                    key=lambda x: x["conf"],
+                    default=None,
+                )
+                if best:
+                    yolo_total_val, yolo_text, tries = ocr_amount_from_crop(img, best["box"])
+                    if yolo_total_val is not None:
+                        yolo_total = yolo_total_val
+                        yolo_total_text = yolo_text
+                    if tries:
+                        yolo_total_attempts = tries
 
-            # Date
-            best = max([f for f in fields if f["name"] == "Date"], key=lambda x: x["conf"], default=None)
-            if best:
-                date_txt = ocr_crop(img, best["box"], psm=6)
-                yolo_date = extract_date(date_txt)
-    except Exception:
-        fields = []  # YOLO is optional; swallow errors
+                best = max(
+                    [f for f in fields if f["name"] == "Date"],
+                    key=lambda x: x["conf"],
+                    default=None,
+                )
+                if best:
+                    date_txt = ocr_crop(img, best["box"], psm=6)
+                    yolo_date = extract_date(date_txt)
+        except Exception:
+            fields = []
 
-    # ---------- Full-page OCR (Tesseract) ----------
-    rec = ocr_image_path(str(tmp))  # {path, text, mean_conf, w, h}
-    tess_text = rec["text"]
-    tess_conf = rec.get("mean_conf", 0.0)
+    paddle_task = None
+    tess_task = None
+    ocr_space_task = None
 
-    # ---------- Decide if we should call OCR.space (save credits) ----------
-    store_t, total_t, date_t = parse_fields_from_ocr(rec)
-    need_ocr_space = (tess_conf is None or tess_conf < 45) or (store_t is None or total_t is None)
+    if PADDLE_VL_ENABLED:
+        paddle_task = asyncio.create_task(
+            OCR_STRATEGY_CONTEXT.run("paddle_vl", image_bytes=content, filename=fname)
+        )
+    if TESSERACT_ENABLED and OCR_STRATEGY_CONTEXT.has("tesseract"):
+        tess_task = asyncio.create_task(
+            OCR_STRATEGY_CONTEXT.run("tesseract", image_bytes=content, filename=fname)
+        )
+    if OCR_SPACE_ENABLED:
+        ocr_space_task = asyncio.create_task(
+            OCR_STRATEGY_CONTEXT.run("ocr_space", image_bytes=content, filename=fname)
+        )
 
-    if OCR_SPACE_ENABLED and need_ocr_space:
-        ocrs = await ocr_space_bytes(content, filename=fname)
-    else:
-        ocrs = {"ok": False, "text": "", "error": None, "http": None}
+    vl_store = vl_total = vl_date = None
+    vl_source_tag = None
+    vl_used = False
+    vl_payload = {"ok": False, "text": "", "error": None}
+    vl_timeout = False
+    if paddle_task:
+        try:
+            vl_result = await asyncio.wait_for(paddle_task, timeout=60)
+            vl_payload = vl_result.payload
+            if vl_payload.get("ok") and vl_payload.get("text"):
+                s, t, d = parse_fields(vl_payload["text"])
+                vl_store, vl_total, vl_date = s, t, d
+                vl_source_tag = vl_result.name
+                vl_used = True
+        except asyncio.TimeoutError:
+            paddle_task.cancel()
+            vl_timeout = True
+        except Exception:
+            logging.exception("PaddleOCR-VL processing failed")
 
-    # ---------- Google Vision fallback ----------
+    if vl_payload.get("ok") and fields:
+        for det in fields:
+            crop_bytes = _crop_to_bytes(img, det["box"]) if img is not None else None
+            if not crop_bytes:
+                continue
+            prompt = None
+            if det["name"] == "Merchant":
+                prompt = "Extract the store or merchant name from this receipt snippet."
+            elif det["name"] == "Total":
+                prompt = "Extract the total amount the customer needs to pay. Return only the numeric amount with currency if present."
+            elif det["name"] == "Date":
+                prompt = "Extract the transaction or receipt date in YYYY-MM-DD format if possible."
+            crop_payload = paddle_vl_text(crop_bytes, prompt=prompt)
+            if not crop_payload.get("ok") or not crop_payload.get("text"):
+                continue
+            cs, ct, cd = parse_fields(crop_payload["text"])
+            if det["name"] == "Merchant" and cs and not vl_store:
+                vl_store = cs
+            elif det["name"] == "Total" and ct is not None and vl_total is None:
+                vl_total = ct
+            elif det["name"] == "Date" and cd and not vl_date:
+                vl_date = cd
+            vl_used = True
+
+    rec = {"text": "", "mean_conf": 0.0, "words": []}
+    tess_text = ""
+    tess_conf = 0.0
+    if tess_task:
+        try:
+            tess_result = await tess_task
+            rec = tess_result.payload
+            tess_text = rec.get("text", "") or ""
+            tess_conf = rec.get("mean_conf", 0.0)
+        except Exception:
+            logging.exception("Tesseract processing failed")
+
+    store_t = total_t = date_t = None
+    if tess_text:
+        store_t, total_t, date_t = parse_fields_from_ocr(rec)
+
+    ocrs = {"ok": False, "text": "", "raw": None, "error": None, "http": None}
+    if ocr_space_task:
+        try:
+            ocr_space_result = await ocr_space_task
+            ocrs = ocr_space_result.payload
+        except Exception:
+            logging.exception("OCR.space processing failed")
+
     vision_used = False
     vision_res = {"ok": False, "text": "", "error": None, "info": None}
     if GCV_ENABLED:
-        need_vision = (store_t is None or total_t is None or date_t is None or (tess_conf or 0) < 40)
-        if ocrs.get("ok") and ocrs.get("text"):
-            s_store, s_total, s_date = parse_fields(ocrs["text"])
-            if s_store and s_total and s_date:
-                need_vision = False
+        need_vision = False
+        if store_t is None or total_t is None or date_t is None:
+            need_vision = True
+        if vl_store is None or vl_total is None or vl_date is None:
+            need_vision = True
+        if (tess_conf or 0) < 55:
+            need_vision = True
         if need_vision:
-            vision_res = await google_vision_text(content)
+            vision_res = (
+                await OCR_STRATEGY_CONTEXT.run(
+                    "google_vision", image_bytes=content, filename=fname
+                )
+            ).payload
             vision_used = True
 
-    # ---------- Reconcile all OCR sources ----------
-    store_r, total_r, date_r, source_tag = resolve_fields(rec, tess_conf, ocrs, vision_res)
+    paddle_candidate = None
+    if any(v is not None for v in (vl_store, vl_total, vl_date)):
+        paddle_candidate = {
+            "store": vl_store,
+            "total": vl_total,
+            "date": vl_date,
+            "confidence": 90.0 if vl_payload.get("ok") else 0.0,
+        }
+    store_r, total_r, date_r, source_tag = resolve_fields(
+        rec, tess_conf, ocrs, vision_res, paddle=paddle_candidate
+    )
 
-    # ---------- Prefer YOLO crops when present ----------
-    store = yolo_store or store_r
-    total = yolo_total if yolo_total is not None else total_r
-    date_iso = yolo_date or date_r
+    store = yolo_store or vl_store or store_r
+    total = (
+        yolo_total
+        if yolo_total is not None
+        else (vl_total if vl_total is not None else total_r)
+    )
+    date_iso = yolo_date or vl_date or date_r
 
     store_norm = normalize_store_name(store) if store else None
 
-    # Fuzzy brand correction (e.g., "¢-ELEWEOD" -> "7-ELEVEN")
     canon, canon_cat, canon_score = correct_store_name(store_norm or store)
     if canon and canon_score and canon_score >= 0.86:
         store = canon
         store_norm = canon
 
-    # ---------- Category via rules → ML ----------
     category = confidence = source = reason = None
     cat_rule_val, reason = rule_category(tess_text, store_norm or store)
     if cat_rule_val:
@@ -525,10 +770,9 @@ async def upload_receipt(file: UploadFile = File(...), user=Depends(get_current_
         confidence = float(proba.max())
         source = "ml"
 
-    # ---------- Save to DB (per user) ----------
     insert_receipt(
         _id=tmp.stem,
-        user_id=user_id,                 # <<< IMPORTANT
+        user_id=user_id,
         store=store,
         store_norm=store_norm,
         date_iso=date_iso,
@@ -537,8 +781,21 @@ async def upload_receipt(file: UploadFile = File(...), user=Depends(get_current_
         category_source=source,
         confidence=_clean_num(confidence),
         ocr_conf=_clean_num(rec.get("mean_conf")),
-        text=tess_text
+        text=tess_text,
     )
+
+    if store == vl_store or total == vl_total or date_iso == vl_date:
+        source_tag = vl_source_tag or source_tag
+
+    ocr_space_used = bool(ocrs.get("ok"))
+    source_labels = {
+        "paddle_vl": "PaddleOCR-VL",
+        "tesseract": "Tesseract",
+        "ocr_space": "OCR.space",
+        "vision": "Google Vision",
+        "consensus": "Consensus (multiple engines agreed)",
+    }
+    source_friendly = source_labels.get(source_tag, source_tag)
 
     return {
         "id": tmp.stem,
@@ -555,15 +812,22 @@ async def upload_receipt(file: UploadFile = File(...), user=Depends(get_current_
         "text": tess_text,
         "ocr_conf": rec.get("mean_conf"),
         "yolo_used": bool(fields),
-        "ocr_space_used": OCR_SPACE_ENABLED and need_ocr_space,
-        "ocr_space_ok": ocrs.get("ok", False),
+        "ocr_space_used": ocr_space_used,
+        "ocr_space_ok": ocr_space_used,
         "ocr_space_http": ocrs.get("http"),
         "ocr_space_err": ocrs.get("error"),
+        "paddle_vl_used": vl_used,
+        "paddle_vl_ok": vl_payload.get("ok", False),
+        "paddle_vl_err": vl_payload.get("error"),
+        "paddle_vl_timeout": vl_timeout,
         "vision_used": vision_used,
         "vision_ok": vision_res.get("ok", False),
         "vision_err": vision_res.get("error"),
-        "vision_conf": (vision_res.get("info") or {}).get("confidence") if isinstance(vision_res.get("info"), dict) else None,
-        "ocr_source": source_tag,  # "tesseract" | "ocr_space" | "consensus"
+        "vision_conf": (vision_res.get("info") or {}).get("confidence")
+        if isinstance(vision_res.get("info"), dict)
+        else None,
+        "ocr_source": source_tag,
+        "ocr_source_label": source_friendly,
     }
 
 @app.post("/feedback")
@@ -667,3 +931,4 @@ async def debug_token(request: Request):
     return {"auth_header": auth}
 # Ensure DB tables exist on import
 init_db()
+

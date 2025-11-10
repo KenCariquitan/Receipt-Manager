@@ -5,18 +5,32 @@ class ReceiptCard extends StatelessWidget {
   final UploadResult res;
   final String? selectedCategory;
   final ValueChanged<String?>? onCategoryChanged;
+  final TextEditingController storeController;
+  final TextEditingController totalController;
+  final TextEditingController dateController;
 
   const ReceiptCard({
     super.key,
     required this.res,
     this.selectedCategory,
     this.onCategoryChanged,
+    required this.storeController,
+    required this.totalController,
+    required this.dateController,
   });
 
-  static const cats = ['Utilities','Food','Groceries','Transportation','Health & Wellness','Others'];
+  static const cats = [
+    'Utilities',
+    'Food',
+    'Groceries',
+    'Transportation',
+    'Health & Wellness',
+    'Others'
+  ];
 
   @override
   Widget build(BuildContext context) {
+    final textTheme = Theme.of(context).textTheme;
     return Card(
       margin: const EdgeInsets.symmetric(vertical: 8),
       child: Padding(
@@ -24,10 +38,45 @@ class ReceiptCard extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(res.store ?? 'Unknown Store', style: Theme.of(context).textTheme.titleLarge),
-            const SizedBox(height: 6),
-            Text('Total: ${res.total?.toStringAsFixed(2) ?? '—'}'),
-            Text('Date: ${res.date ?? '—'}'),
+            ValueListenableBuilder<TextEditingValue>(
+              valueListenable: storeController,
+              builder: (context, value, _) {
+                final storeName =
+                    value.text.isNotEmpty ? value.text : (res.store ?? 'Unknown Store');
+                return Text(storeName, style: textTheme.titleLarge);
+              },
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: storeController,
+              decoration: const InputDecoration(
+                labelText: 'Store / Merchant',
+                helperText: 'Edit if the merchant name is incorrect.',
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: totalController,
+              keyboardType: const TextInputType.numberWithOptions(decimal: true),
+              decoration: InputDecoration(
+                labelText: 'Total Amount',
+                helperText: res.total != null
+                    ? 'Detected total: ${res.total!.toStringAsFixed(2)}'
+                    : 'Enter the total from the receipt.',
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: dateController,
+              keyboardType: TextInputType.datetime,
+              decoration: InputDecoration(
+                labelText: 'Receipt Date (YYYY-MM-DD)',
+                helperText: res.date != null
+                    ? 'Detected date: ${res.date}'
+                    : 'Enter an ISO date if missing.',
+              ),
+            ),
+            const SizedBox(height: 12),
             Text('Predicted: ${res.category ?? 'No model'}'),
             if (res.confidence != null)
               Text('Confidence: ${(res.confidence! * 100).toStringAsFixed(1)}%'),
@@ -50,7 +99,7 @@ class ReceiptCard extends StatelessWidget {
             ),
             const Divider(height: 20),
             Text(
-              'Engines — YOLO: ${res.yoloUsed} | OCR.space: ${res.ocrSpaceUsed} (${res.ocrSource ?? 'n/a'})',
+              'Engines — YOLO: ${res.yoloUsed} | OCR.space: ${res.ocrSpaceUsed} | Final OCR: ${res.ocrSourceLabel ?? res.ocrSource ?? 'n/a'}',
               style: Theme.of(context).textTheme.bodySmall,
             ),
           ],

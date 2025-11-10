@@ -2,8 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'auth_gate.dart';
-import 'pages/home_page.dart';
-import 'pages/sign_in_page.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -23,11 +21,6 @@ class MyApp extends StatelessWidget {
       title: 'Receipt OCR',
       theme: ThemeData(useMaterial3: true),
       home: const AuthGate(), // decides login vs app
-      initialRoute: '/signin',
-      routes: {
-        '/signin': (context) => const SignInPage(),
-        '/home': (context) => const HomePage(),
-      },
     );
   }
 }

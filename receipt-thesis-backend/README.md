@@ -21,6 +21,18 @@ This folder gives you a ready-to-run backend that:
 - **macOS:** `brew install tesseract`
 - **Ubuntu/Debian:** `sudo apt-get install tesseract-ocr`
 
+> **Optional (recommended if you have an NVIDIA GPU): PaddleOCR-VL as primary OCR**
+>
+> 1. Install the PaddleOCR-VL stack inside your virtualenv (GPU build shown below; replace `cu126` with your CUDA version):
+>    ```bash
+>    pip install --upgrade pip
+>    pip install paddlepaddle-gpu==3.2.0 -i https://www.paddlepaddle.org.cn/packages/stable/cu126/
+>    pip install "p addleocr[doc-parser]"
+>    ```
+>    For CPU-only environments, use `pip install paddlepaddle` instead of the GPU wheel (expect slower inference).
+> 2. Set `PADDLE_VL_ENABLED=true` in `receipt-thesis-backend/.env`. To temporarily disable Tesseract while testing PaddleOCR-VL, set `TESSERACT_ENABLED=false`.
+> 3. Restart the backend. PaddleOCR-VL will run first; Tesseract/OCR.space remain as fallbacks.
+
 ### 1) Create & activate a Python environment (recommended)
 ```bash
 

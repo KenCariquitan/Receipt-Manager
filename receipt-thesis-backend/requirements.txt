@@ -19,3 +19,6 @@ httpx
 psycopg2-binary
 python-jose[cryptography]
 google-cloud-vision
+# PaddleOCR-VL 
+paddlepaddle-gpu==3.2.0
+paddleocr[doc-parser]

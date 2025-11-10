@@ -33,10 +33,6 @@ class _SignInPageState extends State<SignInPage> {
       if (session == null || session.accessToken.isEmpty) {
         throw Exception("Login failed: no session returned");
       }
-
-      if (mounted) {
-        Navigator.of(context).pushReplacementNamed('/home');
-      }
     } catch (e) {
       setState(() => error = e.toString());
     } finally {

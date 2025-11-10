@@ -52,6 +52,7 @@ class UploadResult {
   final bool ocrSpaceUsed;
   final bool ocrSpaceOk;
   final String? ocrSource;  // tesseract | ocr_space | consensus
+  final String? ocrSourceLabel;
   final String? reason;
 
   UploadResult({
@@ -69,6 +70,7 @@ class UploadResult {
     this.ocrSpaceUsed = false,
     this.ocrSpaceOk = false,
     this.ocrSource,
+    this.ocrSourceLabel,
     this.reason,
   });
 
@@ -87,8 +89,63 @@ class UploadResult {
         ocrSpaceUsed: j['ocr_space_used'] == true,
         ocrSpaceOk: j['ocr_space_ok'] == true,
         ocrSource: j['ocr_source'],
+        ocrSourceLabel: j['ocr_source_label'],
         reason: j['reason'],
       );
+}
+
+class ReceiptJobStatus {
+  final String jobId;
+  final String status;
+  final String? filename;
+  final DateTime? createdAt;
+  final DateTime? startedAt;
+  final DateTime? finishedAt;
+  final UploadResult? result;
+  final String? error;
+
+  const ReceiptJobStatus({
+    required this.jobId,
+    required this.status,
+    this.filename,
+    this.createdAt,
+    this.startedAt,
+    this.finishedAt,
+    this.result,
+    this.error,
+  });
+
+  bool get isFinal => status == 'completed' || status == 'failed';
+
+  factory ReceiptJobStatus.fromJson(Map<String, dynamic> j) {
+    UploadResult? result;
+    final rawResult = j['result'];
+    if (rawResult is Map<String, dynamic>) {
+      result = UploadResult.fromJson(rawResult);
+    }
+
+    DateTime? parseSeconds(dynamic value) {
+      if (value is num) {
+        final millis = (value * 1000).toInt();
+        return DateTime.fromMillisecondsSinceEpoch(millis, isUtc: true).toLocal();
+      }
+      return null;
+    }
+
+    final rawId = j['id'] ?? j['job_id'];
+    final jobId = rawId is String ? rawId : rawId?.toString() ?? '';
+
+    return ReceiptJobStatus(
+      jobId: jobId,
+      status: (j['status'] ?? 'queued') as String,
+      filename: j['filename'] as String?,
+      createdAt: parseSeconds(j['created_at']),
+      startedAt: parseSeconds(j['started_at']),
+      finishedAt: parseSeconds(j['finished_at']),
+      result: result,
+      error: j['error'] as String?,
+    );
+  }
 }
 
 class SummaryStats {

@@ -28,9 +28,9 @@ class _HomePageState extends State<HomePage> {
                 await Supabase.instance.client.auth.signOut();
                 if (mounted) {
                   Navigator.pop(ctx); // close sheet
-                  // Navigate back to login page
-                  Navigator.of(context)
-                      .pushNamedAndRemoveUntil('/signin', (route) => false);
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('Signed out')),
+                  );
                 }
               },
             ),

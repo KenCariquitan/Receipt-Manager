@@ -1,6 +1,8 @@
 from __future__ import annotations
 import re
 from typing import Optional, Tuple, Iterable
+import difflib
+from functools import lru_cache
 import Levenshtein as lev  # pip install python-Levenshtein
 
 # ================= Canonical brand sets (UPPERCASE) =================
@@ -23,6 +25,14 @@ HEALTH_BRANDS = {
     "MERCURY DRUG","WATSONS","SOUTHSTAR","GENERIKA","ROSE PHARMACY","THE GENERICS PHARMACY"
 }
 
+# Brand aliases to handle OCR variants and legal names
+ALIAS_MAP = {
+    "GOLDEN ARCHES": "MCDONALD'S",
+    "GOLDEN ARCHES FOOD CORPORATION": "MCDONALD'S",
+    "GIANT ARCHES": "MCDONALD'S",
+    "GIANT ARCHES FOOD CORPORATION": "MCDONALD'S",
+}
+
 # Per-category keyword hints (lowercase)
 UTILITY_KW = {"kwh","kilowatt","meter","account no","service period","due date","statement","internet","fiber","dsl","postpaid","prepaid load","load","data pack","billing"}
 TRANSPORT_KW = {"diesel","unleaded","gasoline","pump","liter","litre","toll","rfid","easytrip","autosweep","plate","odometer","grab","angkas"}
@@ -39,6 +49,10 @@ ALL_SETS = [
 ]
 
 SPACES = re.compile(r"\s+")
+BREAK_PAT = re.compile(
+    r"\b(branch|tin|vat|address|add\.?|tel|contact|phone|no\.?|receipt|invoice|official|cashier|terminal|store no\.?)\b",
+    re.IGNORECASE,
+)
 
 # ================= OCR-specific sanitize: fix common confusions =================
 # Especially for 7-ELEVEN variants like "¢-ELEWEM", "¢-ELEWEOD"
@@ -62,10 +76,53 @@ def _sanitize_ocr(s: str) -> str:
     u = SPACES.sub(" ", u).strip()
     return u
 
+_CHAR_REPLACEMENTS = (
+    ("0", "O"),
+    ("1", "I"),
+    ("2", "Z"),
+    ("3", "B"),
+    ("4", "A"),
+    ("5", "S"),
+    ("6", "G"),
+    ("7", "T"),
+    ("8", "B"),
+    ("9", "G"),
+    ("@", "A"),
+    ("$", "S"),
+    ("€", "E"),
+    ("£", "L"),
+    ("¢", "C"),
+)
+
+
+def _apply_char_map(u: str) -> str:
+    # Special-case some two-character confusions frequently seen in OCR
+    u = u.replace("2I", "PI")
+    u = u.replace("2L", "PL")
+    for wrong, right in _CHAR_REPLACEMENTS:
+        u = u.replace(wrong, right)
+    return u
+
+
+def _normalize_for_match(s: str) -> str:
+    s = _sanitize_ocr(s)
+    s = _apply_char_map(s)
+    s = re.sub(r"[^A-Z0-9]", "", s)
+    # Trim leading non-alpha that might survive
+    s = re.sub(r"^[^A-Z]+", "", s)
+    return s
+
 def normalize_store_name(store: Optional[str]) -> Optional[str]:
     if not store:
         return None
     s = _sanitize_ocr(store)
+    # Only keep the first line if multi-line header came through
+    if "\n" in s:
+        s = s.split("\n", 1)[0]
+    # Cut off at common keywords that usually start addresses or metadata
+    match = BREAK_PAT.search(s)
+    if match:
+        s = s[:match.start()]
     # Remove legal suffixes
     s = re.sub(r"\b(CORP(?:ORATION)?|INC\.?|CO\.?|COMPANY|LTD\.?|CORPORATION)\b", "", s)
     s = re.sub(r"\s{2,}", " ", s).strip()
@@ -74,6 +131,62 @@ def normalize_store_name(store: Optional[str]) -> Optional[str]:
 # ================= Fuzzy snapping to canonical brand =================
 def _distance(a: str, b: str) -> int:
     return lev.distance(a, b)
+
+def _sequence_ratio(a: str, b: str) -> float:
+    if not a or not b:
+        return 0.0
+    return difflib.SequenceMatcher(None, a, b).ratio()
+
+
+def _partial_ratio(a: str, b: str) -> float:
+    if not a or not b:
+        return 0.0
+    if len(a) > len(b):
+        a, b = b, a
+    best = 0.0
+    span = len(a)
+    for i in range(0, len(b) - span + 1):
+        window = b[i : i + span]
+        best = max(best, difflib.SequenceMatcher(None, a, window).ratio())
+        if best >= 0.995:  # early exit if essentially perfect
+            break
+    return best
+
+
+def _similarity_score(norm: str, candidate: str) -> float:
+    """
+    Combined score that considers raw and sanitized strings.
+    Returns value in [0,1].
+    """
+    norm_clean = _normalize_for_match(norm)
+    cand_clean = _normalize_for_match(candidate)
+
+    if not norm_clean or not cand_clean:
+        return 0.0
+
+    lev_d = _distance(norm_clean, cand_clean)
+    denom = max(len(norm_clean), len(cand_clean)) or 1
+    lev_score = 1.0 - (lev_d / denom)
+
+    seq_score = _sequence_ratio(norm_clean, cand_clean)
+    partial = _partial_ratio(norm_clean, cand_clean)
+
+    # Encourage prefix matches (common when OCR drops leading characters)
+    prefix_bonus = 0.0
+    if cand_clean.startswith(norm_clean) or norm_clean.startswith(cand_clean):
+        prefix_bonus = 0.05
+
+    base = max(lev_score, seq_score, partial)
+    return min(1.0, base + prefix_bonus)
+
+
+@lru_cache(maxsize=1)
+def _all_brands_cached() -> tuple[str, ...]:
+    brands: list[str] = []
+    for _, bset, _ in ALL_SETS:
+        brands.extend(list(bset))
+    return tuple(brands)
+
 
 def _best_match(norm: str, candidates: Iterable[str]) -> tuple[Optional[str], float]:
     """
@@ -85,18 +198,10 @@ def _best_match(norm: str, candidates: Iterable[str]) -> tuple[Optional[str], fl
     best = None
     best_score = 0.0
     for c in candidates:
-        d = _distance(norm, c)
-        denom = max(len(norm), len(c)) or 1
-        score = 1.0 - (d / denom)
+        score = _similarity_score(norm, c)
         if score > best_score:
             best, best_score = c, score
     return best, best_score
-
-def _all_brands() -> list[str]:
-    brands: list[str] = []
-    for _, bset, _ in ALL_SETS:
-        brands.extend(list(bset))
-    return brands
 
 def correct_store_name(store: Optional[str]) -> tuple[Optional[str], Optional[str], Optional[float]]:
     """
@@ -110,6 +215,13 @@ def correct_store_name(store: Optional[str]) -> tuple[Optional[str], Optional[st
     if not norm:
         return None, None, None
 
+    # Direct alias map check (handles legal names like "Golden Arches Food Corporation")
+    for alias, canonical in ALIAS_MAP.items():
+        if alias in norm.upper():
+            for cat, brands, _ in ALL_SETS:
+                if canonical in brands:
+                    return canonical, cat, 1.0
+
     # 1) Exact/contains quick pass
     for cat, brands, _ in ALL_SETS:
         for b in brands:
@@ -117,12 +229,12 @@ def correct_store_name(store: Optional[str]) -> tuple[Optional[str], Optional[st
                 return b, cat, 1.0
 
     # 2) Fuzzy against all brands
-    best, score = _best_match(norm, _all_brands())
+    best, score = _best_match(norm, _all_brands_cached())
 
     # Confidence threshold:
     # - Short strings are tricky; require higher similarity
-    # - For typical brand lengths (~6-12), 0.82–0.88 works well
-    min_required = 0.86
+    # - For typical brand lengths (~6-12), 0.82-0.88 works well
+    min_required = 0.84
     if score >= min_required and best:
         # Map brand to category
         for cat, brands, _ in ALL_SETS:

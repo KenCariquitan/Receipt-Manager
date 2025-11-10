@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -34,7 +35,7 @@ class ApiClient {
     return _decodeJson<Map<String, dynamic>>(r);
   }
 
-  Future<UploadResult> uploadReceipt(MultipartFile file) async {
+  Future<ReceiptJobStatus> uploadReceipt(MultipartFile file) async {
     final uri = Uri.parse('$_base/upload_receipt');
     final req = http.MultipartRequest('POST', uri)
       ..headers.addAll(await _authHeaders())
@@ -44,10 +45,41 @@ class ApiClient {
     final body = await streamed.stream.bytesToString();
 
     if (streamed.statusCode < 200 || streamed.statusCode >= 300) {
-      throw Exception('HTTP ${streamed.statusCode} on /upload_receipt — $body');
+      throw Exception('HTTP ${streamed.statusCode} on /upload_receipt - $body');
     }
     final json = jsonDecode(body) as Map<String, dynamic>;
-    return UploadResult.fromJson(json);
+    return ReceiptJobStatus.fromJson(json);
+  }
+
+  Future<ReceiptJobStatus> jobStatus(String jobId) async {
+    final uri = Uri.parse('$_base/jobs/$jobId');
+    final r = await http
+        .get(uri, headers: await _authHeaders())
+        .timeout(const Duration(seconds: 15));
+    final json = _decodeJson<Map<String, dynamic>>(r);
+    return ReceiptJobStatus.fromJson(json);
+  }
+
+  Future<ReceiptJobStatus> waitForJob(
+    String jobId, {
+    Duration pollInterval = const Duration(seconds: 2),
+    Duration timeout = const Duration(minutes: 3),
+    void Function(ReceiptJobStatus status)? onUpdate,
+  }) async {
+    var status = await jobStatus(jobId);
+    onUpdate?.call(status);
+
+    final deadline = DateTime.now().add(timeout);
+    while (!status.isFinal) {
+      if (DateTime.now().isAfter(deadline)) {
+        throw TimeoutException(
+            'Job $jobId did not complete within ${timeout.inSeconds} seconds');
+      }
+      await Future.delayed(pollInterval);
+      status = await jobStatus(jobId);
+      onUpdate?.call(status);
+    }
+    return status;
   }
 
   Future<List<Receipt>> listReceipts({int limit = 50, int offset = 0}) async {
