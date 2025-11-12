@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 from datetime import datetime, date
-from typing import Optional, Iterable
+from typing import Optional, Iterable, Any
 
 from sqlalchemy import (
     create_engine, Column, String, Float, Date, DateTime, Text, Index
@@ -101,6 +101,12 @@ def insert_receipt(
         )
         db.merge(r)  # upsert by primary key
         db.commit()
+
+
+def _to_float(value: Any) -> Optional[float]:
+    if value is None:
+        return None
+    return float(value)
 
 
 def list_receipts(user_id: str, limit: int = 50, offset: int = 0) -> list[Receipt]:
@@ -439,12 +445,12 @@ def low_confidence_receipts(user_id: str, threshold: float = 0.6, limit: int = 5
                     "id": r.id,
                     "store": r.store,
                     "store_normalized": r.store_normalized,
-                    "date": r.date.isoformat() if r.date else None,
-                    "total": float(r.total) if r.total is not None else None,
+                    "date": r.date.isoformat() if r.date is not None else None,
+                    "total": _to_float(r.total),
                     "category": r.category,
-                    "confidence": float(r.confidence) if r.confidence is not None else None,
-                    "ocr_conf": float(r.ocr_conf) if r.ocr_conf is not None else None,
-                    "created_at": r.created_at.isoformat() if r.created_at else None,
+                    "confidence": _to_float(r.confidence),
+                    "ocr_conf": _to_float(r.ocr_conf),
+                    "created_at": r.created_at.isoformat() if r.created_at is not None else None,
                 }
                 for r in rows
             ]

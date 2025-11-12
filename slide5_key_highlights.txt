@@ -1,0 +1,164 @@
+Slide 5 – Key Implementation Highlights
+=====================================
+
+Design Patterns
+---------------
+1. OCR Strategy Context (Paddle/Tesseract/OCR.space/GCV)
+   ```python
+   # app/api.py (current)
+   _ocr_strategies = {}
+   if TESSERACT_ENABLED:
+       _ocr_strategies["tesseract"] = TesseractStrategy()
+   _ocr_strategies["ocr_space"] = OCRSpaceStrategy(enabled=OCR_SPACE_ENABLED)
+   _ocr_strategies["google_vision"] = GoogleVisionStrategy(enabled=GCV_ENABLED)
+   _ocr_strategies["paddle_vl"] = PaddleVLStrategy(enabled=PADDLE_VL_ENABLED)
+
+   OCR_STRATEGY_CONTEXT = OCRContext(_ocr_strategies)
+
+   # Later (async run with timeout)
+   paddle_task = asyncio.create_task(
+       OCR_STRATEGY_CONTEXT.run("paddle_vl", image_bytes=content, filename=fname)
+   )
+   tess_task = asyncio.create_task(
+       OCR_STRATEGY_CONTEXT.run("tesseract", image_bytes=content, filename=fname)
+   )
+   ocr_space_task = asyncio.create_task(
+       OCR_STRATEGY_CONTEXT.run("ocr_space", image_bytes=content, filename=fname)
+   )
+   ```
+
+2. Compression Strategy (camera vs gallery)
+   ```dart
+   // upload_page.dart
+   static const CompressionContext _compressionContext = CompressionContext(
+     fastStrategy: FastCompressStrategy(),
+     qualityStrategy: QualityCompressStrategy(),
+     originalStrategy: OriginalCompressStrategy(),
+     forceOriginal: true,
+   );
+
+   final strategy = _compressionContext.choose(source: source);
+   final preparedFile = await strategy.run(picked);
+   ```
+
+Refactoring
+-----------
+1. Merchant normalization (before vs after)
+   ```python
+   # Before (simplified)
+   def normalize_store_name(store):
+       if not store:
+           return None
+       s = store.upper()
+       return s.split("\n", 1)[0].strip()
+
+   # After (ph_rules.py)
+   def _normalize_for_match(s: str) -> str:
+       s = _sanitize_ocr(s)
+       s = _apply_char_map(s)
+       s = re.sub(r"[^A-Z0-9]", "", s)
+       return re.sub(r"^[^A-Z]+", "", s)
+
+   def _similarity_score(norm: str, candidate: str) -> float:
+       norm_clean = _normalize_for_match(norm)
+       cand_clean = _normalize_for_match(candidate)
+       lev_score = 1.0 - (lev.distance(norm_clean, cand_clean) / max(len(norm_clean), len(cand_clean)))
+       seq_score = difflib.SequenceMatcher(None, norm_clean, cand_clean).ratio()
+       partial = _partial_ratio(norm_clean, cand_clean)
+       prefix_bonus = 0.05 if cand_clean.startswith(norm_clean) else 0.0
+       return min(1.0, max(lev_score, seq_score, partial) + prefix_bonus)
+   ```
+
+2. Upload page corrections & job status (before vs after)
+   ```dart
+   // Before: read-only fields
+   Text(res.store ?? 'Unknown Store');
+   Text('Total: ${res.total?.toStringAsFixed(2) ?? '-'}');
+
+   // After: editable controllers + validation
+   TextField(
+     controller: storeController,
+     decoration: const InputDecoration(
+       labelText: 'Store / Merchant',
+       helperText: 'Edit if the merchant name is incorrect.'
+     ),
+   );
+   TextField(
+     controller: totalController,
+     keyboardType: TextInputType.numberWithOptions(decimal: true),
+     decoration: InputDecoration(
+       labelText: 'Total Amount',
+       helperText: res.total != null ? 'Detected total: ${res.total!.toStringAsFixed(2)}' : 'Enter the total.'
+     ),
+   );
+   Text(
+     'Job ${currentJob!.jobId} - ${currentJob!.status}',
+     style: Theme.of(context).textTheme.bodyMedium,
+   );
+   ```
+
+Features
+--------
+1. Async job queue (per-user polling)
+   ```python
+   # app/api.py
+   job = await _register_job(user_id=user_id, filename=fname)
+   asyncio.create_task(_process_job(job["id"], tmp, user_id, fname))
+   return _public_job(job)
+
+   @app.get("/jobs/{job_id}")
+   async def get_job_status(job_id: str, user=Depends(get_current_user)):
+       job = await _get_job(job_id)
+       if not job or job.get("user_id") != user.get("sub"):
+           raise HTTPException(status_code=404, detail="Job not found")
+       return _public_job(job)
+   ```
+
+2. Sign-in UI (before vs after)
+   ```dart
+   // Before
+   Column(
+     children: [
+       TextField(controller: emailC, decoration: const InputDecoration(labelText: 'Email')),
+       TextField(controller: passC, decoration: const InputDecoration(labelText: 'Password'), obscureText: true),
+       Row(children: [...])
+     ],
+   );
+
+   // After
+   Form(
+     key: _formKey,
+     child: Card(
+       elevation: 8,
+       child: Column(
+         children: [
+           const FlutterLogo(size: 96),
+           TextFormField(
+             controller: emailC,
+             validator: _validateEmail,
+             decoration: const InputDecoration(
+               labelText: 'Email',
+               prefixIcon: Icon(Icons.email_outlined),
+               border: OutlineInputBorder(),
+             ),
+           ),
+           TextFormField(
+             controller: passC,
+             obscureText: !_isPasswordVisible,
+             validator: _validatePassword,
+             decoration: InputDecoration(
+               labelText: 'Password',
+               prefixIcon: const Icon(Icons.lock_outline),
+               suffixIcon: IconButton(
+                 icon: Icon(_isPasswordVisible ? Icons.visibility_off : Icons.visibility),
+                 onPressed: () => setState(() => _isPasswordVisible = !_isPasswordVisible),
+               ),
+             ),
+           ),
+           CheckboxListTile(...),
+           ElevatedButton(onPressed: loading ? null : _signIn, child: ...),
+         ],
+       ),
+     ),
+   );
+   ```
