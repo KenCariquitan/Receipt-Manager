@@ -1,6 +1,6 @@
 # app/db.py
 from __future__ import annotations
-import os
+import os, uuid
 from pathlib import Path
 from datetime import datetime, date
 from typing import Optional, Iterable, Any
@@ -53,6 +53,18 @@ class Receipt(Base):
 Index("idx_receipts_user_created", Receipt.user_id, Receipt.created_at)
 Index("idx_receipts_user_date", Receipt.user_id, Receipt.date)
 Index("idx_receipts_user_category", Receipt.user_id, Receipt.category)
+
+
+class ReceiptCorrection(Base):
+    __tablename__ = "receipt_corrections"
+    id = Column(String, primary_key=True, default=lambda: uuid.uuid4().hex)
+    receipt_id = Column(String, nullable=False, index=True)
+    user_id = Column(String, nullable=False, index=True)
+    field_name = Column(String, nullable=False)
+    old_value = Column(Text, nullable=True)
+    new_value = Column(Text, nullable=True)
+    change_type = Column(String, nullable=False)  # "ocr" or "category"
+    logged_at = Column(DateTime, default=datetime.utcnow, index=True)
 
 
 def init_db():

@@ -78,8 +78,9 @@ class ReceiptCard extends StatelessWidget {
             ),
             const SizedBox(height: 12),
             Text('Predicted: ${res.category ?? 'No model'}'),
-            if (res.confidence != null)
-              Text('Confidence: ${(res.confidence! * 100).toStringAsFixed(1)}%'),
+            // Debug info (confidence) removed for clean UI; restore if needed.
+            // if (res.confidence != null)
+            //   Text('Confidence: ${(res.confidence! * 100).toStringAsFixed(1)}%'),
             const SizedBox(height: 8),
             DropdownButtonFormField<String>(
               initialValue: selectedCategory ?? res.category ?? 'Others',
@@ -97,11 +98,12 @@ class ReceiptCard extends StatelessWidget {
                 ),
               ],
             ),
-            const Divider(height: 20),
-            Text(
-              'Engines — YOLO: ${res.yoloUsed} | OCR.space: ${res.ocrSpaceUsed} | Final OCR: ${res.ocrSourceLabel ?? res.ocrSource ?? 'n/a'}',
-              style: Theme.of(context).textTheme.bodySmall,
-            ),
+            // Debug engine breakdown hidden for production use. Uncomment to inspect.
+            // const Divider(height: 20),
+            // Text(
+            //   'Engines - YOLO: ${res.yoloUsed} | OCR.space: ${res.ocrSpaceUsed} | Final OCR: ${res.ocrSourceLabel ?? res.ocrSource ?? 'n/a'}',
+            //   style: Theme.of(context).textTheme.bodySmall,
+            // ),
           ],
         ),
       ),

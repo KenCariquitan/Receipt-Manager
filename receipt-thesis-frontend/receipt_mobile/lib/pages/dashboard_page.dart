@@ -15,7 +15,7 @@ class DashboardPage extends ConsumerWidget {
     final topMerchants = ref.watch(topMerchantsProvider);
     final weekday = ref.watch(weekdaySpendProvider);
     final rolling = ref.watch(rolling30Provider);
-    final lowConfidence = ref.watch(lowConfidenceProvider);
+    // Removed lowConfidence section for cleaner dashboard; provider not watched here.
 
     return Scaffold(
       body: Padding(
@@ -270,25 +270,6 @@ class DashboardPage extends ConsumerWidget {
                 );
               },
             ),
-            const SizedBox(height: 24),
-            Text('Low Confidence Receipts',
-                style: Theme.of(context).textTheme.titleMedium),
-            const SizedBox(height: 12),
-            lowConfidence.when(
-              loading: () => const LinearProgressIndicator(),
-              error: (e, _) => Text('Error: $e'),
-              data: (rows) {
-                if (rows.isEmpty) {
-                  return const Text('Looks great! Nothing to review.');
-                }
-                final trimmed = rows.take(8).toList();
-                return Card(
-                  child: Column(
-                    children: trimmed.map(_lowConfidenceTile).toList(),
-                  ),
-                );
-              },
-            ),
           ],
         ),
       ),
@@ -323,26 +304,6 @@ class DashboardPage extends ConsumerWidget {
     );
   }
 
-  static Widget _lowConfidenceTile(Receipt r) {
-    return ListTile(
-      title: Text(r.store ?? 'Unknown store'),
-      subtitle: Text(
-          '${r.date ?? 'Unknown date'} • ${r.category ?? 'Uncategorised'}'),
-      trailing: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        crossAxisAlignment: CrossAxisAlignment.end,
-        children: [
-          if (r.total != null) Text(_formatCurrency(r.total!)),
-          Text(
-            r.confidence != null
-                ? '${(r.confidence! * 100).toStringAsFixed(0)}% sure'
-                : 'No score',
-            style: const TextStyle(fontSize: 12),
-          ),
-        ],
-      ),
-    );
-  }
 
   static String _formatCurrency(double value) => '₱${value.toStringAsFixed(2)}';
 

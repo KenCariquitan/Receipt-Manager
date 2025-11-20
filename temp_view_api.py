@@ -1,10 +1,9 @@
 # app/api.py
 from __future__ import annotations
 
-import os, re, uuid, asyncio, math, time, logging, json
+import os, re, uuid, asyncio, math, time, logging
 from pathlib import Path
 from typing import Optional
-from datetime import date as _date, datetime as _datetime
 from jose import jwt
 from jose.backends.cryptography_backend import CryptographyRSAKey
 import httpx
@@ -34,7 +33,7 @@ from .db import (
     stats_by_category, stats_by_month, stats_summary,
     top_merchants_current_month, weekday_spend,
     rolling_30_day_spend, low_confidence_receipts,
-    SessionLocal, Receipt, ReceiptCorrection
+    SessionLocal, Receipt
 )
 from .ocr_strategies import (
     OCRContext,
@@ -302,13 +301,6 @@ app.add_middleware(
 # ------------- lazy-load model (if present) -------------
 vectorizer: Optional[TfidfVectorizer] = load(VPATH) if VPATH.exists() else None
 clf: Optional[SGDClassifier] = load(CPATH) if CPATH.exists() else None
-
-def _serialize_value(value):
-    if isinstance(value, (_date, _datetime)):
-        return value.isoformat()
-    if value is None:
-        return None
-    return str(value)
 
 # ================== OCR.space helper ===================
 async def ocr_space_bytes(img_bytes: bytes, filename: str = "receipt.jpg", lang: str = "eng") -> dict:
@@ -778,6 +770,20 @@ async def _process_receipt_pipeline(tmp_path: Path, user_id: str, filename: str)
         confidence = float(proba.max())
         source = "ml"
 
+    insert_receipt(
+        _id=tmp.stem,
+        user_id=user_id,
+        store=store,
+        store_norm=store_norm,
+        date_iso=date_iso,
+        total=_clean_num(total),
+        category=category,
+        category_source=source,
+        confidence=_clean_num(confidence),
+        ocr_conf=_clean_num(rec.get("mean_conf")),
+        text=tess_text,
+    )
+
     if store == vl_store or total == vl_total or date_iso == vl_date:
         source_tag = vl_source_tag or source_tag
 
@@ -791,38 +797,12 @@ async def _process_receipt_pipeline(tmp_path: Path, user_id: str, filename: str)
     }
     source_friendly = source_labels.get(source_tag, source_tag)
 
-    # If Tesseract confidence is low, rely on Google Vision fields if present
-    final_store = store
-    final_total = total
-    final_date = date_iso
-    if (tess_conf or 0) < 50 and vision_res.get("ok") and vision_res.get("text"):
-        gv_store, gv_total, gv_date = parse_fields(vision_res["text"])
-        if gv_store or gv_total is not None or gv_date:
-            final_store = gv_store or final_store
-            final_total = gv_total if gv_total is not None else final_total
-            final_date = gv_date or final_date
-            source_tag = "vision"
-
-    insert_receipt(
-        _id=tmp.stem,
-        user_id=user_id,
-        store=final_store,
-        store_norm=normalize_store_name(final_store) if final_store else None,
-        date_iso=final_date,
-        total=_clean_num(final_total),
-        category=category,
-        category_source=source,
-        confidence=_clean_num(confidence),
-        ocr_conf=_clean_num(rec.get("mean_conf")),
-        text=tess_text,
-    )
-
     return {
         "id": tmp.stem,
-        "store": final_store,
-        "store_normalized": normalize_store_name(final_store) if final_store else None,
-        "date": final_date,
-        "total": final_total,
+        "store": store,
+        "store_normalized": store_norm,
+        "date": date_iso,
+        "total": total,
         "yolo_total_text": yolo_total_text,
         "yolo_total_attempts": yolo_total_attempts,
         "category": category,
@@ -927,89 +907,24 @@ def get_low_confidence(threshold: float = 0.6, limit: int = 50, user=Depends(get
 
 @app.patch("/receipts/{rid}")
 def update_receipt(rid: str, upd: ReceiptUpdate, user=Depends(get_current_user)):
-    user_id = user.get("sub")
-    if not user_id:
-        raise HTTPException(status_code=401, detail="No user id")
-
     with SessionLocal() as db:
-        r = (
-            db.query(Receipt)
-            .filter(Receipt.id == rid, Receipt.user_id == user_id)
-            .first()
-        )
+        q = db.query(Receipt).filter(Receipt.id == rid, Receipt.user_id == user.get("sub"))
+        r = q.first()
         if not r:
             raise HTTPException(status_code=404, detail="not found")
 
-        original_values = {
-            "store": r.store,
-            "date": r.date,
-            "total": r.total,
-            "category": r.category,
-        }
-
         data = upd.model_dump(exclude_unset=True)
         if "date" in data and data["date"] is not None:
+            from datetime import date as _d
             try:
-                data["date"] = _date.fromisoformat(data["date"])
+                data["date"] = _d.fromisoformat(data["date"])
             except Exception:
                 data["date"] = None
 
-        corrections: list[ReceiptCorrection] = []
-        for field in ("store", "date", "total", "category"):
-            if field in data:
-                old_val = original_values.get(field)
-                new_val = data[field]
-                if _serialize_value(old_val) != _serialize_value(new_val):
-                    corrections.append(
-                        ReceiptCorrection(
-                            receipt_id=rid,
-                            user_id=user_id,
-                            field_name=field,
-                            old_value=_serialize_value(old_val),
-                            new_value=_serialize_value(new_val),
-                            change_type="ocr"
-                            if field in {"store", "date", "total"}
-                            else "category",
-                        )
-                    )
-
         for k, v in data.items():
             setattr(r, k, v)
-
-        if corrections:
-            db.add_all(corrections)
-
         db.commit()
-
     return {"ok": True}
-
-
-@app.get("/logs/corrections")
-def get_correction_logs(limit: int = 200, user=Depends(get_current_user)):
-    user_id = user.get("sub")
-    if not user_id:
-        raise HTTPException(status_code=401, detail="No user id")
-
-    with SessionLocal() as db:
-        rows = (
-            db.query(ReceiptCorrection)
-            .filter(ReceiptCorrection.user_id == user_id)
-            .order_by(ReceiptCorrection.logged_at.desc())
-            .limit(limit)
-            .all()
-        )
-    return [
-        {
-            "id": row.id,
-            "receipt_id": row.receipt_id,
-            "field": row.field_name,
-            "old": row.old_value,
-            "new": row.new_value,
-            "type": row.change_type,
-            "logged_at": row.logged_at.isoformat() if row.logged_at else None,
-        }
-        for row in rows
-    ]
 @app.get("/debug/token")
 async def debug_token(request: Request):
     auth = request.headers.get("authorization")
