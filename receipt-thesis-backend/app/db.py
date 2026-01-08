@@ -67,6 +67,23 @@ class ReceiptCorrection(Base):
     logged_at = Column(DateTime, default=datetime.utcnow, index=True)
 
 
+class CustomLabel(Base):
+    """User-defined category labels for receipts not covered by built-in categories."""
+    __tablename__ = "custom_labels"
+    id = Column(String, primary_key=True, default=lambda: uuid.uuid4().hex)
+    user_id = Column(String, nullable=False, index=True)
+    name = Column(String, nullable=False)  # e.g., "Pet Supplies", "Entertainment"
+    color = Column(String, nullable=True)  # optional hex color for UI
+    icon = Column(String, nullable=True)   # optional icon name
+    description = Column(Text, nullable=True)
+    usage_count = Column(Float, default=0)  # how many receipts use this label
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+Index("idx_custom_labels_user", CustomLabel.user_id)
+Index("idx_custom_labels_user_name", CustomLabel.user_id, CustomLabel.name, unique=True)
+
+
 def init_db():
     Base.metadata.create_all(bind=engine)
 
@@ -466,3 +483,147 @@ def low_confidence_receipts(user_id: str, threshold: float = 0.6, limit: int = 5
                 }
                 for r in rows
             ]
+
+
+# ================== Custom Labels CRUD ==================
+
+def create_custom_label(
+    user_id: str,
+    name: str,
+    color: Optional[str] = None,
+    icon: Optional[str] = None,
+    description: Optional[str] = None,
+) -> dict:
+    """Create a new custom label for a user. Returns the created label dict."""
+    with SessionLocal() as db:
+        # Check if label with same name already exists for this user
+        existing = (
+            db.query(CustomLabel)
+            .filter(CustomLabel.user_id == user_id, CustomLabel.name == name)
+            .first()
+        )
+        if existing:
+            raise ValueError(f"Label '{name}' already exists")
+        
+        label = CustomLabel(
+            user_id=user_id,
+            name=name,
+            color=color,
+            icon=icon,
+            description=description,
+            usage_count=0,
+        )
+        db.add(label)
+        db.commit()
+        db.refresh(label)
+        return _label_to_dict(label)
+
+
+def list_custom_labels(user_id: str) -> list[dict]:
+    """List all custom labels for a user."""
+    with SessionLocal() as db:
+        labels = (
+            db.query(CustomLabel)
+            .filter(CustomLabel.user_id == user_id)
+            .order_by(CustomLabel.name)
+            .all()
+        )
+        return [_label_to_dict(l) for l in labels]
+
+
+def get_custom_label(user_id: str, label_id: str) -> Optional[dict]:
+    """Get a single custom label by ID."""
+    with SessionLocal() as db:
+        label = (
+            db.query(CustomLabel)
+            .filter(CustomLabel.id == label_id, CustomLabel.user_id == user_id)
+            .first()
+        )
+        return _label_to_dict(label) if label else None
+
+
+def update_custom_label(
+    user_id: str,
+    label_id: str,
+    name: Optional[str] = None,
+    color: Optional[str] = None,
+    icon: Optional[str] = None,
+    description: Optional[str] = None,
+) -> Optional[dict]:
+    """Update a custom label. Returns updated label dict or None if not found."""
+    with SessionLocal() as db:
+        label = (
+            db.query(CustomLabel)
+            .filter(CustomLabel.id == label_id, CustomLabel.user_id == user_id)
+            .first()
+        )
+        if not label:
+            return None
+        
+        if name is not None:
+            # Check for name collision
+            existing = (
+                db.query(CustomLabel)
+                .filter(
+                    CustomLabel.user_id == user_id,
+                    CustomLabel.name == name,
+                    CustomLabel.id != label_id,
+                )
+                .first()
+            )
+            if existing:
+                raise ValueError(f"Label '{name}' already exists")
+            label.name = name
+        
+        if color is not None:
+            label.color = color
+        if icon is not None:
+            label.icon = icon
+        if description is not None:
+            label.description = description
+        
+        db.commit()
+        db.refresh(label)
+        return _label_to_dict(label)
+
+
+def delete_custom_label(user_id: str, label_id: str) -> bool:
+    """Delete a custom label. Returns True if deleted, False if not found."""
+    with SessionLocal() as db:
+        label = (
+            db.query(CustomLabel)
+            .filter(CustomLabel.id == label_id, CustomLabel.user_id == user_id)
+            .first()
+        )
+        if not label:
+            return False
+        db.delete(label)
+        db.commit()
+        return True
+
+
+def increment_label_usage(user_id: str, label_name: str) -> None:
+    """Increment usage count when a receipt is assigned to this custom label."""
+    with SessionLocal() as db:
+        label = (
+            db.query(CustomLabel)
+            .filter(CustomLabel.user_id == user_id, CustomLabel.name == label_name)
+            .first()
+        )
+        if label:
+            label.usage_count = (label.usage_count or 0) + 1
+            db.commit()
+
+
+def _label_to_dict(label: CustomLabel) -> dict:
+    """Convert CustomLabel model to dict."""
+    return {
+        "id": label.id,
+        "name": label.name,
+        "color": label.color,
+        "icon": label.icon,
+        "description": label.description,
+        "usage_count": int(label.usage_count or 0),
+        "created_at": label.created_at.isoformat() if label.created_at else None,
+        "updated_at": label.updated_at.isoformat() if label.updated_at else None,
+    }

@@ -203,4 +203,105 @@ class ApiClient {
     throw Exception(
         'HTTP ${r.statusCode} ${r.reasonPhrase} — ${r.body.isNotEmpty ? r.body : 'no body'}');
   }
+
+  // ================== Custom Labels API ==================
+
+  /// Get all categories (builtin + custom)
+  Future<CategoriesResponse> getCategories() async {
+    final r = await http
+        .get(Uri.parse('$_base/categories'), headers: await _authHeaders())
+        .timeout(const Duration(seconds: 15));
+    return CategoriesResponse.fromJson(_decodeJson<Map<String, dynamic>>(r));
+  }
+
+  /// List user's custom labels
+  Future<List<CustomLabel>> listCustomLabels() async {
+    final r = await http
+        .get(Uri.parse('$_base/custom_labels'), headers: await _authHeaders())
+        .timeout(const Duration(seconds: 15));
+    final arr = _decodeJson<List>(r);
+    return arr
+        .map((e) => CustomLabel.fromJson(e as Map<String, dynamic>))
+        .toList();
+  }
+
+  /// Create a new custom label
+  Future<CustomLabel> createCustomLabel({
+    required String name,
+    String? color,
+    String? icon,
+    String? description,
+  }) async {
+    final payload = <String, dynamic>{'name': name};
+    if (color != null) payload['color'] = color;
+    if (icon != null) payload['icon'] = icon;
+    if (description != null) payload['description'] = description;
+
+    final r = await http
+        .post(
+          Uri.parse('$_base/custom_labels'),
+          headers: {
+            'Content-Type': 'application/json',
+            ...await _authHeaders(),
+          },
+          body: jsonEncode(payload),
+        )
+        .timeout(const Duration(seconds: 20));
+
+    if (r.statusCode >= 200 && r.statusCode < 300) {
+      final j = jsonDecode(r.body) as Map<String, dynamic>;
+      return CustomLabel.fromJson(j['label'] as Map<String, dynamic>);
+    }
+    throw Exception(
+        'HTTP ${r.statusCode} ${r.reasonPhrase} — ${r.body.isNotEmpty ? r.body : 'no body'}');
+  }
+
+  /// Update an existing custom label
+  Future<CustomLabel> updateCustomLabel({
+    required String labelId,
+    String? name,
+    String? color,
+    String? icon,
+    String? description,
+  }) async {
+    final payload = <String, dynamic>{};
+    if (name != null) payload['name'] = name;
+    if (color != null) payload['color'] = color;
+    if (icon != null) payload['icon'] = icon;
+    if (description != null) payload['description'] = description;
+
+    final r = await http
+        .patch(
+          Uri.parse('$_base/custom_labels/$labelId'),
+          headers: {
+            'Content-Type': 'application/json',
+            ...await _authHeaders(),
+          },
+          body: jsonEncode(payload),
+        )
+        .timeout(const Duration(seconds: 20));
+
+    if (r.statusCode >= 200 && r.statusCode < 300) {
+      final j = jsonDecode(r.body) as Map<String, dynamic>;
+      return CustomLabel.fromJson(j['label'] as Map<String, dynamic>);
+    }
+    throw Exception(
+        'HTTP ${r.statusCode} ${r.reasonPhrase} — ${r.body.isNotEmpty ? r.body : 'no body'}');
+  }
+
+  /// Delete a custom label
+  Future<bool> deleteCustomLabel(String labelId) async {
+    final r = await http
+        .delete(
+          Uri.parse('$_base/custom_labels/$labelId'),
+          headers: await _authHeaders(),
+        )
+        .timeout(const Duration(seconds: 20));
+
+    if (r.statusCode >= 200 && r.statusCode < 300) {
+      return true;
+    }
+    throw Exception(
+        'HTTP ${r.statusCode} ${r.reasonPhrase} — ${r.body.isNotEmpty ? r.body : 'no body'}');
+  }
 }

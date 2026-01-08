@@ -235,3 +235,98 @@ class RollingStat {
     );
   }
 }
+
+/// User-defined custom category label
+class CustomLabel {
+  final String id;
+  final String name;
+  final String? color;
+  final String? icon;
+  final String? description;
+  final int usageCount;
+  final String? createdAt;
+  final String? updatedAt;
+
+  CustomLabel({
+    required this.id,
+    required this.name,
+    this.color,
+    this.icon,
+    this.description,
+    this.usageCount = 0,
+    this.createdAt,
+    this.updatedAt,
+  });
+
+  factory CustomLabel.fromJson(Map<String, dynamic> j) => CustomLabel(
+        id: j['id'] ?? '',
+        name: j['name'] ?? '',
+        color: j['color'],
+        icon: j['icon'],
+        description: j['description'],
+        usageCount: (j['usage_count'] as num?)?.toInt() ?? 0,
+        createdAt: j['created_at'],
+        updatedAt: j['updated_at'],
+      );
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'name': name,
+        'color': color,
+        'icon': icon,
+        'description': description,
+        'usage_count': usageCount,
+      };
+}
+
+/// Response from /categories endpoint
+class CategoriesResponse {
+  final List<CategoryItem> builtin;
+  final List<CategoryItem> custom;
+
+  CategoriesResponse({required this.builtin, required this.custom});
+
+  factory CategoriesResponse.fromJson(Map<String, dynamic> j) {
+    final builtinList = (j['builtin'] as List?)
+            ?.map((e) => CategoryItem.fromJson(e as Map<String, dynamic>))
+            .toList() ??
+        [];
+    final customList = (j['custom'] as List?)
+            ?.map((e) => CategoryItem.fromJson(e as Map<String, dynamic>))
+            .toList() ??
+        [];
+    return CategoriesResponse(builtin: builtinList, custom: customList);
+  }
+
+  /// All categories (builtin + custom) as a flat list
+  List<CategoryItem> get all => [...builtin, ...custom];
+}
+
+class CategoryItem {
+  final String name;
+  final String type; // 'builtin' or 'custom'
+  final String? color;
+  final String? icon;
+  final String? id; // only for custom
+  final int usageCount;
+
+  CategoryItem({
+    required this.name,
+    required this.type,
+    this.color,
+    this.icon,
+    this.id,
+    this.usageCount = 0,
+  });
+
+  bool get isCustom => type == 'custom';
+
+  factory CategoryItem.fromJson(Map<String, dynamic> j) => CategoryItem(
+        name: j['name'] ?? '',
+        type: j['type'] ?? 'builtin',
+        color: j['color'],
+        icon: j['icon'],
+        id: j['id'],
+        usageCount: (j['usage_count'] as num?)?.toInt() ?? 0,
+      );
+}

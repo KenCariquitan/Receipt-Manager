@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'dashboard_page.dart';
 import 'upload_page.dart';
 import 'receipts_page.dart';
+import 'custom_labels_page.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 class HomePage extends StatefulWidget {
@@ -21,6 +22,21 @@ class _HomePageState extends State<HomePage> {
       builder: (ctx) => SafeArea(
         child: Wrap(
           children: [
+            ListTile(
+              leading: const Icon(Icons.label_outline),
+              title: const Text("Custom Labels"),
+              subtitle: const Text("Manage custom receipt categories"),
+              onTap: () {
+                Navigator.of(ctx).pop();
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (ctx) => const CustomLabelsPage(),
+                  ),
+                );
+              },
+            ),
+            const Divider(),
             ListTile(
               leading: const Icon(Icons.logout, color: Colors.red),
               title: const Text("Logout"),

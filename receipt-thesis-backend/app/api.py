@@ -34,7 +34,9 @@ from .db import (
     stats_by_category, stats_by_month, stats_summary,
     top_merchants_current_month, weekday_spend,
     rolling_30_day_spend, low_confidence_receipts,
-    SessionLocal, Receipt, ReceiptCorrection
+    SessionLocal, Receipt, ReceiptCorrection, CustomLabel,
+    create_custom_label, list_custom_labels, get_custom_label,
+    update_custom_label, delete_custom_label, increment_label_usage,
 )
 from .ocr_strategies import (
     OCRContext,
@@ -981,6 +983,13 @@ def update_receipt(rid: str, upd: ReceiptUpdate, user=Depends(get_current_user))
 
         db.commit()
 
+    # Track usage of custom labels (if category changed to a custom one)
+    if "category" in data and data["category"]:
+        new_cat = data["category"]
+        if new_cat not in CATS_PUBLIC:
+            # It's a custom label - increment usage
+            increment_label_usage(user_id, new_cat)
+
     return {"ok": True}
 
 
@@ -1014,6 +1023,137 @@ def get_correction_logs(limit: int = 200, user=Depends(get_current_user)):
 async def debug_token(request: Request):
     auth = request.headers.get("authorization")
     return {"auth_header": auth}
+
+
+# ================== Custom Labels API ==================
+
+class CustomLabelCreate(BaseModel):
+    name: str
+    color: str | None = None
+    icon: str | None = None
+    description: str | None = None
+
+class CustomLabelUpdate(BaseModel):
+    name: str | None = None
+    color: str | None = None
+    icon: str | None = None
+    description: str | None = None
+
+
+@app.get("/custom_labels")
+def get_custom_labels(user=Depends(get_current_user)):
+    """List all custom labels for the current user."""
+    user_id = user.get("sub")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="No user id")
+    return list_custom_labels(user_id)
+
+
+@app.post("/custom_labels")
+def create_label(data: CustomLabelCreate, user=Depends(get_current_user)):
+    """Create a new custom label."""
+    user_id = user.get("sub")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="No user id")
+    
+    if not data.name or not data.name.strip():
+        raise HTTPException(status_code=400, detail="Label name is required")
+    
+    try:
+        label = create_custom_label(
+            user_id=user_id,
+            name=data.name.strip(),
+            color=data.color,
+            icon=data.icon,
+            description=data.description,
+        )
+        return {"ok": True, "label": label}
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+
+
+@app.get("/custom_labels/{label_id}")
+def get_label(label_id: str, user=Depends(get_current_user)):
+    """Get a single custom label by ID."""
+    user_id = user.get("sub")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="No user id")
+    
+    label = get_custom_label(user_id, label_id)
+    if not label:
+        raise HTTPException(status_code=404, detail="Label not found")
+    return label
+
+
+@app.patch("/custom_labels/{label_id}")
+def patch_label(label_id: str, data: CustomLabelUpdate, user=Depends(get_current_user)):
+    """Update a custom label."""
+    user_id = user.get("sub")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="No user id")
+    
+    try:
+        label = update_custom_label(
+            user_id=user_id,
+            label_id=label_id,
+            name=data.name.strip() if data.name else None,
+            color=data.color,
+            icon=data.icon,
+            description=data.description,
+        )
+        if not label:
+            raise HTTPException(status_code=404, detail="Label not found")
+        return {"ok": True, "label": label}
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+
+
+@app.delete("/custom_labels/{label_id}")
+def remove_label(label_id: str, user=Depends(get_current_user)):
+    """Delete a custom label."""
+    user_id = user.get("sub")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="No user id")
+    
+    deleted = delete_custom_label(user_id, label_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Label not found")
+    return {"ok": True}
+
+
+@app.get("/categories")
+def get_all_categories(user=Depends(get_current_user)):
+    """
+    Get all available categories: built-in + user's custom labels.
+    Useful for populating category dropdowns.
+    """
+    user_id = user.get("sub")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="No user id")
+    
+    # Built-in categories
+    builtin = [
+        {"name": cat, "type": "builtin", "color": None, "icon": None}
+        for cat in CATS_PUBLIC
+    ]
+    
+    # Custom labels
+    custom = list_custom_labels(user_id)
+    custom_cats = [
+        {
+            "name": label["name"],
+            "type": "custom",
+            "color": label.get("color"),
+            "icon": label.get("icon"),
+            "id": label["id"],
+            "usage_count": label.get("usage_count", 0),
+        }
+        for label in custom
+    ]
+    
+    return {"builtin": builtin, "custom": custom_cats}
+
+
 # Ensure DB tables exist on import
 init_db()
 

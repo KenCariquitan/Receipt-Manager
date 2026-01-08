@@ -121,7 +121,7 @@ class _ReceiptsPageState extends ConsumerState<ReceiptsPage> {
             ),
             const SizedBox(height: 12),
             DropdownButtonFormField<String>(
-              value: _categoryFilter ?? 'All',
+              initialValue: _categoryFilter ?? 'All',
               items: categoryItems
                   .map(
                     (cat) => DropdownMenuItem<String>(
@@ -200,8 +200,7 @@ class _ReceiptsPageState extends ConsumerState<ReceiptsPage> {
               Expanded(
                 child: filtered.isEmpty
                     ? const Center(
-                        child:
-                            Text('No receipts match the selected filters.'),
+                        child: Text('No receipts match the selected filters.'),
                       )
                     : RefreshIndicator(
                         onRefresh: () async =>
@@ -209,8 +208,7 @@ class _ReceiptsPageState extends ConsumerState<ReceiptsPage> {
                         child: ListView.separated(
                           physics: const AlwaysScrollableScrollPhysics(),
                           itemCount: filtered.length,
-                          separatorBuilder: (_, __) =>
-                              const Divider(height: 1),
+                          separatorBuilder: (_, __) => const Divider(height: 1),
                           itemBuilder: (_, i) {
                             final r = filtered[i];
                             return ListTile(
@@ -228,8 +226,7 @@ class _ReceiptsPageState extends ConsumerState<ReceiptsPage> {
                                         ReceiptDetailPage(receipt: r),
                                   ),
                                 ).then(
-                                  (_) =>
-                                      ref.refresh(receiptsProvider.future),
+                                  (_) => ref.refresh(receiptsProvider.future),
                                 );
                               },
                             );

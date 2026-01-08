@@ -2,7 +2,6 @@ import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../models.dart';
 import '../providers.dart';
 
 class DashboardPage extends ConsumerWidget {
@@ -303,7 +302,6 @@ class DashboardPage extends ConsumerWidget {
       ),
     );
   }
-
 
   static String _formatCurrency(double value) => '₱${value.toStringAsFixed(2)}';
 
